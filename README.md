@@ -177,3 +177,19 @@ be used to attack it:
   allocation, so a remote peer cannot force a huge buffer.
 - Lock poisoning is handled; one bad connection never takes the relay down.
 - Every crash fix ships with a synthetic regression test.
+
+## ⚠️ Disclaimer
+
+**Who builds this.** I am not a senior software developer. RemoteCraft is developed with substantial help from AI coding agents: I set the direction, review the changes and test them, but the code has not been audited by professional engineers and may contain bugs, security weaknesses or design mistakes.
+
+**No warranty.** The software is provided "as is", without warranty of any kind, express or implied, including merchantability and fitness for a particular purpose. Use it at your own risk and keep backups of anything important.
+
+**Limitation of liability.** To the maximum extent permitted by applicable law, the author and contributors are not liable for any damage, data loss or other harm arising from the use of, or the inability to use, this software. Nothing here limits any liability that cannot be excluded by law. The binding terms are those of the licence (`LICENSE-MIT`); this section summarises them and does not replace them.
+
+**Your responsibility.** You alone are responsible for how you use this software and for complying with the laws that apply to you. In particular:
+
+- **Authorised use only.** Only use RemoteCraft on computers that you own, or with the explicit, informed permission of their owner and of the person using them. Accessing a computer without authorisation is a crime in most countries.
+- **At work.** If you use it in a workplace, follow your organisation's policies and the employment and privacy laws that apply (for example the GDPR and national rules on monitoring employees).
+- **Security.** The encryption and authentication have not been independently audited. Use strong passwords, keep the relay server up to date, and do not rely on RemoteCraft where a breach would have serious consequences.
+
+**Trademarks and affiliation.** "AnyDesk" and "TeamViewer" are trademarks of their respective owners and are named only to describe the kind of tool RemoteCraft is. RemoteCraft is an independent project, not affiliated with or endorsed by them.
