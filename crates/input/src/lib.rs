@@ -15,7 +15,7 @@
     clippy::unreachable
 )]
 
-use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+use enigo::{Axis, Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use remotecraft_core::{InputEvent, KeyName, MouseButton};
 
 #[derive(Debug, thiserror::Error)]
@@ -28,24 +28,50 @@ pub enum InputError {
     Inject(String),
 }
 
-/// Applies input events to the host's mouse and keyboard.
+/// Applies input events to the host's mouse and keyboard, mapped to one
+/// monitor's rectangle in the virtual desktop.
 pub struct InputInjector {
     enigo: Enigo,
+    /// Top-left of the target monitor in the virtual desktop (can be negative).
+    origin_x: i32,
+    origin_y: i32,
     screen_w: i32,
     screen_h: i32,
 }
 
 impl InputInjector {
-    /// Create an injector. `screen_w`/`screen_h` are the host screen size used
-    /// to turn normalized pointer coordinates into absolute pixels.
+    /// Create an injector for a monitor at the virtual-desktop origin (0, 0)
+    /// with the given size (the common single-monitor / primary case).
     pub fn new(screen_w: u32, screen_h: u32) -> Result<Self, InputError> {
+        Self::with_bounds(0, 0, screen_w, screen_h)
+    }
+
+    /// Create an injector for a monitor whose top-left is at (`origin_x`,
+    /// `origin_y`) in the virtual desktop and whose size is `screen_w` x
+    /// `screen_h`. Normalized pointer coordinates map into that rectangle.
+    pub fn with_bounds(
+        origin_x: i32,
+        origin_y: i32,
+        screen_w: u32,
+        screen_h: u32,
+    ) -> Result<Self, InputError> {
         let enigo =
             Enigo::new(&Settings::default()).map_err(|e| InputError::Init(e.to_string()))?;
         Ok(Self {
             enigo,
+            origin_x,
+            origin_y,
             screen_w: screen_w.max(1) as i32,
             screen_h: screen_h.max(1) as i32,
         })
+    }
+
+    /// Point the injector at a different monitor without recreating it.
+    pub fn set_bounds(&mut self, origin_x: i32, origin_y: i32, screen_w: u32, screen_h: u32) {
+        self.origin_x = origin_x;
+        self.origin_y = origin_y;
+        self.screen_w = screen_w.max(1) as i32;
+        self.screen_h = screen_h.max(1) as i32;
     }
 
     /// Apply one input event.
@@ -53,9 +79,8 @@ impl InputInjector {
         match event {
             InputEvent::MouseMove { x, y } => {
                 let (px, py) = normalized_to_pixels(*x, *y, self.screen_w, self.screen_h);
-                self.enigo
-                    .move_mouse(px, py, Coordinate::Abs)
-                    .map_err(|e| InputError::Inject(e.to_string()))
+                let (gx, gy) = (self.origin_x + px, self.origin_y + py);
+                move_pointer(&mut self.enigo, gx, gy)
             }
             InputEvent::MouseButton { button, pressed } => {
                 let dir = if *pressed {
@@ -169,6 +194,30 @@ fn map_key(k: KeyName) -> Key {
             _ => Key::F12,
         },
     }
+}
+
+/// Move the system pointer to a virtual-desktop coordinate (can be on any
+/// monitor). On Windows this uses `SetCursorPos`, because enigo's absolute
+/// move only addresses the primary monitor; elsewhere it uses enigo.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn move_pointer(_enigo: &mut Enigo, gx: i32, gy: i32) -> Result<(), InputError> {
+    // SAFETY: `SetCursorPos` only moves the system cursor to the given screen
+    // coordinate; it takes two integers, reads no caller memory, and cannot
+    // cause UB. A failure returns 0, which we surface as an error.
+    let ok = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos(gx, gy) };
+    if ok == 0 {
+        Err(InputError::Inject("SetCursorPos failed".to_string()))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn move_pointer(enigo: &mut Enigo, gx: i32, gy: i32) -> Result<(), InputError> {
+    enigo
+        .move_mouse(gx, gy, enigo::Coordinate::Abs)
+        .map_err(|e| InputError::Inject(e.to_string()))
 }
 
 /// Map a normalized (0.0..=1.0) position to absolute pixels, clamped to the

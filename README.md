@@ -141,6 +141,11 @@ downloadable run artifacts without creating a release.
   real login/lock screen (secure desktop) to the viewer and accept the Windows
   password, like AnyDesk/TeamViewer unattended access. Needs an admin install
   and isolated Win32 FFI. Until then, enable Windows auto-login on the host.
+- [x] M10 — Multi-monitor: when the host has more than one monitor, the viewer
+  shows a per-monitor picker (1, 2, …) next to the Files/Fullscreen buttons and
+  can switch which monitor it sees and controls. Input is mapped into the chosen
+  monitor's rectangle in the virtual desktop (Windows uses `SetCursorPos`, since
+  enigo's absolute move only reaches the primary monitor).
 
 ### Security note
 

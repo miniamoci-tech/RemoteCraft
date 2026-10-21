@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use remotecraft_core::{
-    decode_frame, to_bytes, AppMessage, DirEntry, InputEvent, KeyName, MouseButton,
+    decode_frame, to_bytes, AppMessage, DirEntry, InputEvent, KeyName, MonitorInfo, MouseButton,
 };
 use remotecraft_net::{RelayClient, SecureChannel};
 use tokio::sync::mpsc;
@@ -40,6 +40,9 @@ struct ViewerState {
     status: String,
     listing: Option<Listing>,
     download: Option<Download>,
+    /// The host's monitors and which one is currently shown (M10).
+    monitors: Vec<MonitorInfo>,
+    active_monitor: u32,
 }
 
 fn set_status(shared: &Arc<Mutex<ViewerState>>, ctx: &egui::Context, text: &str) {
@@ -138,18 +141,33 @@ pub struct ViewerApp {
 
 impl eframe::App for ViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let (status, new_frame, listing, download) = match self.shared.lock() {
-            Ok(s) => {
-                let nf = if s.version != self.shown_version {
-                    self.shown_version = s.version;
-                    s.frame.clone()
-                } else {
-                    None
-                };
-                (s.status.clone(), nf, s.listing.clone(), s.download.clone())
-            }
-            Err(_) => ("internal lock error".to_string(), None, None, None),
-        };
+        let (status, new_frame, listing, download, monitors, active_monitor) =
+            match self.shared.lock() {
+                Ok(s) => {
+                    let nf = if s.version != self.shown_version {
+                        self.shown_version = s.version;
+                        s.frame.clone()
+                    } else {
+                        None
+                    };
+                    (
+                        s.status.clone(),
+                        nf,
+                        s.listing.clone(),
+                        s.download.clone(),
+                        s.monitors.clone(),
+                        s.active_monitor,
+                    )
+                }
+                Err(_) => (
+                    "internal lock error".to_string(),
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    0,
+                ),
+            };
 
         if let Some((w, h, rgba)) = new_frame {
             if rgba.len() == w * h * 4 {
@@ -175,6 +193,29 @@ impl eframe::App for ViewerApp {
                     .changed()
                 {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+                }
+                // Monitor picker: shown only when the host has more than one.
+                if monitors.len() > 1 {
+                    ui.separator();
+                    ui.label("🖥");
+                    for m in &monitors {
+                        let label = format!("{}", m.index + 1);
+                        let selected = m.index == active_monitor;
+                        if ui
+                            .selectable_label(selected, label)
+                            .on_hover_text(format!(
+                                "Monitor {} — {}×{}{}",
+                                m.index + 1,
+                                m.width,
+                                m.height,
+                                if m.is_primary { " (primary)" } else { "" }
+                            ))
+                            .clicked()
+                            && !selected
+                        {
+                            self.request(AppMessage::SelectMonitor { index: m.index });
+                        }
+                    }
                 }
                 ui.separator();
                 ui.label(&status);
@@ -597,11 +638,23 @@ async fn network(
                 Ok(AppMessage::HostInfo {
                     screen_width,
                     screen_height,
+                    monitors,
+                    active,
                 }) => {
+                    let count = monitors.len();
+                    if let Ok(mut s) = shared.lock() {
+                        s.monitors = monitors;
+                        s.active_monitor = active;
+                    }
+                    let extra = if count > 1 {
+                        format!(" Monitor {} of {count}.", active + 1)
+                    } else {
+                        String::new()
+                    };
                     set_status(
                         &shared,
                         &ctx,
-                        &format!("Connected. Remote screen {screen_width}x{screen_height}. Mouse, keyboard & files active."),
+                        &format!("Connected. Remote screen {screen_width}x{screen_height}.{extra} Mouse, keyboard & files active."),
                     );
                 }
                 Ok(AppMessage::DirListing {

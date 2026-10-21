@@ -87,10 +87,15 @@ pub enum FromRelay {
 /// encrypted channel (the relay never sees these; it only sees ciphertext).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AppMessage {
-    /// Sent by the host right after the secure channel opens.
+    /// Sent by the host right after the secure channel opens, and again
+    /// whenever the active monitor changes. `screen_width`/`screen_height` are
+    /// the currently shared monitor's size; `monitors` lists all of the host's
+    /// monitors and `active` is the index currently being shared.
     HostInfo {
         screen_width: u32,
         screen_height: u32,
+        monitors: Vec<MonitorInfo>,
+        active: u32,
     },
     /// One JPEG-encoded screen frame from the host.
     Frame {
@@ -102,6 +107,10 @@ pub enum AppMessage {
     ViewerReady,
     /// An input event from the viewer to apply on the host (M3).
     Input(InputEvent),
+    /// Viewer asks the host to share a different monitor (M10). The host
+    /// switches capture/input to that monitor and replies with a fresh
+    /// [`AppMessage::HostInfo`]. Out-of-range indices are ignored.
+    SelectMonitor { index: u32 },
 
     // --- File transfer, host <-> viewer (M6) ---
     /// Viewer asks the host to list a directory. Empty string = host's home.
@@ -132,6 +141,17 @@ pub enum AppMessage {
         channels: u16,
         pcm: Vec<i16>,
     },
+}
+
+/// One of the host's monitors, advertised to the viewer so it can offer a
+/// per-monitor picker. `index` is the stable position used by
+/// [`AppMessage::SelectMonitor`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MonitorInfo {
+    pub index: u32,
+    pub width: u32,
+    pub height: u32,
+    pub is_primary: bool,
 }
 
 /// One entry in a remote directory listing. `path` is the entry's full path on

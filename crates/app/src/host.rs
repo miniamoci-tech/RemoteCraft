@@ -6,12 +6,12 @@
 //! the wire. The (!Send) screen capturer and input injector each live on their
 //! own dedicated thread.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use remotecraft_capture::{Capturer, Frame};
-use remotecraft_core::{decode_frame, to_bytes, AppMessage, InputEvent};
+use remotecraft_capture::{list_monitors, Capturer, Frame, MonitorGeom};
+use remotecraft_core::{decode_frame, to_bytes, AppMessage, InputEvent, MonitorInfo};
 use remotecraft_input::InputInjector;
 use remotecraft_net::{random_password, RelayClient, SecureChannel};
 use tokio::sync::mpsc;
@@ -19,9 +19,27 @@ use tokio::sync::mpsc;
 use crate::flag;
 
 enum CaptureMsg {
-    Ready { width: u32, height: u32 },
+    /// Capture is bound to monitor `index` (sent on start and on each switch).
+    Ready {
+        index: u32,
+        width: u32,
+        height: u32,
+    },
     Frame(Frame),
     Error(String),
+}
+
+/// Convert capture-layer monitor geometry into the protocol's monitor list.
+fn to_monitor_infos(geoms: &[MonitorGeom]) -> Vec<MonitorInfo> {
+    geoms
+        .iter()
+        .map(|g| MonitorInfo {
+            index: g.index,
+            width: g.width,
+            height: g.height,
+            is_primary: g.is_primary,
+        })
+        .collect()
 }
 
 /// How to start a host.
@@ -171,15 +189,24 @@ pub fn spawn_gui(handle: &tokio::runtime::Handle, config: HostConfig, status: Sh
 
 async fn host_loop(config: HostConfig, reporter: Reporter) {
     let active = Arc::new(AtomicBool::new(false));
+    // The monitor the viewer is watching/controlling; changed via SelectMonitor.
+    let selected = Arc::new(AtomicU32::new(0));
     let (frame_tx, mut frame_rx) = mpsc::channel::<CaptureMsg>(2);
+
+    // Enumerate the host's monitors once; used for the viewer's picker and to
+    // map input onto the right monitor. Empty/err falls back to a single one.
+    let geoms = list_monitors().unwrap_or_default();
 
     let interval = Duration::from_millis(1000 / config.fps.max(1) as u64);
     let active_thread = active.clone();
+    let selected_thread = selected.clone();
     let quality = config.quality;
-    std::thread::spawn(move || capture_thread(quality, interval, active_thread, frame_tx));
+    std::thread::spawn(move || {
+        capture_thread(quality, interval, active_thread, selected_thread, frame_tx)
+    });
 
     let (width, height) = match frame_rx.recv().await {
-        Some(CaptureMsg::Ready { width, height }) => (width, height),
+        Some(CaptureMsg::Ready { width, height, .. }) => (width, height),
         Some(CaptureMsg::Error(e)) => {
             reporter.fatal(&format!("screen capture unavailable: {e}"));
             return;
@@ -221,13 +248,15 @@ async fn host_loop(config: HostConfig, reporter: Reporter) {
         };
         reporter.state("Connected — sharing screen, input and files.");
 
+        // Each new viewer starts on the primary monitor.
+        selected.store(0, Ordering::Relaxed);
         let reason = run_session(
             &client,
             &sc,
             &mut frame_rx,
             &active,
-            width,
-            height,
+            &selected,
+            &geoms,
             config.audio,
         )
         .await;
@@ -238,13 +267,14 @@ async fn host_loop(config: HostConfig, reporter: Reporter) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_session(
     client: &Arc<RelayClient>,
     sc: &SecureChannel,
     frame_rx: &mut mpsc::Receiver<CaptureMsg>,
     active: &Arc<AtomicBool>,
-    width: u32,
-    height: u32,
+    selected: &Arc<AtomicU32>,
+    geoms: &[MonitorGeom],
     audio: bool,
 ) -> String {
     // One outbound sender task serializes all messages onto the wire, so the
@@ -264,10 +294,16 @@ async fn run_session(
         }
     });
 
+    let monitors = to_monitor_infos(geoms);
+    let active_geom = geoms.first().copied();
+    let (width, height) = active_geom.map_or((1, 1), |g| (g.width, g.height));
+
     if out_tx
         .send(AppMessage::HostInfo {
             screen_width: width,
             screen_height: height,
+            monitors: monitors.clone(),
+            active: 0,
         })
         .await
         .is_err()
@@ -277,7 +313,9 @@ async fn run_session(
     }
 
     let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
-    std::thread::spawn(move || injection_thread(width, height, input_rx));
+    let geoms_for_input = geoms.to_vec();
+    let selected_for_input = selected.clone();
+    std::thread::spawn(move || injection_thread(geoms_for_input, selected_for_input, input_rx));
 
     if audio {
         start_audio(out_tx.clone());
@@ -286,8 +324,8 @@ async fn run_session(
     active.store(true, Ordering::Relaxed);
 
     let reason = tokio::select! {
-        r = produce_frames(frame_rx, &out_tx) => r,
-        r = handle_incoming(client, sc, &out_tx, &input_tx) => r,
+        r = produce_frames(frame_rx, &out_tx, &monitors) => r,
+        r = handle_incoming(client, sc, &out_tx, &input_tx, selected, monitors.len()) => r,
     };
     sender.abort();
     reason
@@ -296,6 +334,7 @@ async fn run_session(
 async fn produce_frames(
     frame_rx: &mut mpsc::Receiver<CaptureMsg>,
     out_tx: &mpsc::Sender<AppMessage>,
+    monitors: &[MonitorInfo],
 ) -> String {
     loop {
         let msg = match frame_rx.recv().await {
@@ -305,7 +344,27 @@ async fn produce_frames(
         let frame = match msg {
             CaptureMsg::Frame(f) => f,
             CaptureMsg::Error(e) => return format!("capture error: {e}"),
-            CaptureMsg::Ready { .. } => continue,
+            // A (re)bind: tell the viewer which monitor is now active and its
+            // size, so it updates the picker highlight and the aspect ratio.
+            CaptureMsg::Ready {
+                index,
+                width,
+                height,
+            } => {
+                if out_tx
+                    .send(AppMessage::HostInfo {
+                        screen_width: width,
+                        screen_height: height,
+                        monitors: monitors.to_vec(),
+                        active: index,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return "sender stopped".to_string();
+                }
+                continue;
+            }
         };
         if out_tx
             .send(AppMessage::Frame {
@@ -326,6 +385,8 @@ async fn handle_incoming(
     sc: &SecureChannel,
     out_tx: &mpsc::Sender<AppMessage>,
     input_tx: &mpsc::Sender<InputEvent>,
+    selected: &Arc<AtomicU32>,
+    monitor_count: usize,
 ) -> String {
     loop {
         let bytes = match sc.recv_message(client).await {
@@ -335,6 +396,11 @@ async fn handle_incoming(
         match decode_frame::<AppMessage>(&bytes) {
             Ok(AppMessage::Input(ev)) => {
                 let _ = input_tx.try_send(ev);
+            }
+            Ok(AppMessage::SelectMonitor { index }) => {
+                if (index as usize) < monitor_count {
+                    selected.store(index, Ordering::Relaxed);
+                }
             }
             Ok(AppMessage::ListDir { path }) => {
                 if out_tx
@@ -382,15 +448,40 @@ fn start_audio(out_tx: mpsc::Sender<AppMessage>) {
     });
 }
 
-fn injection_thread(width: u32, height: u32, mut rx: mpsc::Receiver<InputEvent>) {
-    let mut injector = match InputInjector::new(width, height) {
-        Ok(i) => i,
-        Err(e) => {
-            eprintln!("[input] disabled: {e}");
-            return;
-        }
+fn injection_thread(
+    geoms: Vec<MonitorGeom>,
+    selected: Arc<AtomicU32>,
+    mut rx: mpsc::Receiver<InputEvent>,
+) {
+    // Start bound to the primary monitor's rectangle.
+    let bounds = |idx: u32| geoms.iter().find(|g| g.index == idx).or(geoms.first());
+    let first = bounds(selected.load(Ordering::Relaxed));
+    let mut injector = match first {
+        Some(g) => match InputInjector::with_bounds(g.x, g.y, g.width, g.height) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("[input] disabled: {e}");
+                return;
+            }
+        },
+        None => match InputInjector::new(1, 1) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("[input] disabled: {e}");
+                return;
+            }
+        },
     };
+    let mut current = selected.load(Ordering::Relaxed);
     while let Some(ev) = rx.blocking_recv() {
+        // Re-aim at the active monitor if the viewer switched.
+        let want = selected.load(Ordering::Relaxed);
+        if want != current {
+            if let Some(g) = bounds(want) {
+                injector.set_bounds(g.x, g.y, g.width, g.height);
+            }
+            current = want;
+        }
         if let Err(e) = injector.apply(&ev) {
             tracing::warn!(error = %e, "input injection failed");
         }
@@ -401,9 +492,11 @@ fn capture_thread(
     quality: u8,
     interval: Duration,
     active: Arc<AtomicBool>,
+    selected: Arc<AtomicU32>,
     tx: mpsc::Sender<CaptureMsg>,
 ) {
-    let capturer = match Capturer::primary(quality) {
+    let mut current = selected.load(Ordering::Relaxed);
+    let mut capturer = match Capturer::for_index(current, quality) {
         Ok(c) => c,
         Err(e) => {
             let _ = tx.blocking_send(CaptureMsg::Error(e.to_string()));
@@ -412,6 +505,7 @@ fn capture_thread(
     };
     if tx
         .blocking_send(CaptureMsg::Ready {
+            index: capturer.geom().index,
             width: capturer.width(),
             height: capturer.height(),
         })
@@ -424,6 +518,28 @@ fn capture_thread(
         if !active.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(150));
             continue;
+        }
+        // Switch monitor if the viewer asked for a different one.
+        let want = selected.load(Ordering::Relaxed);
+        if want != current {
+            match Capturer::for_index(want, quality) {
+                Ok(c) => {
+                    capturer = c;
+                    current = want;
+                    let ready = CaptureMsg::Ready {
+                        index: capturer.geom().index,
+                        width: capturer.width(),
+                        height: capturer.height(),
+                    };
+                    if tx.blocking_send(ready).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not switch monitor");
+                    current = want; // don't retry the same bad index every frame
+                }
+            }
         }
         let start = std::time::Instant::now();
         match capturer.capture() {

@@ -13,3 +13,8 @@ remotecraft-core = { path = "../core" }
 enigo = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+# Windows-only: SetCursorPos places the pointer anywhere on the virtual
+# desktop (any monitor); enigo's absolute move only addresses the primary.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
