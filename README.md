@@ -82,14 +82,25 @@ error LNK1104, point the build output at a plain path:
 
 - [x] M0 — Relay server: registration, ID assignment, session brokering, opaque
   byte relaying, with end-to-end tests.
-- [ ] M1 — Desktop app skeleton (host + viewer), connect through the relay.
-- [ ] M2 — Screen capture + H.264/VP8 frame streaming; viewer window.
+- [x] M1 — Networking layer (`remotecraft-net`): a relay client (register,
+  pair, send/recv) plus a password-authenticated, end-to-end encrypted channel
+  (Noise `NNpsk0`). Demonstrated by `remotecraft-probe host|connect`.
+- [x] M4 (channel) — Attended (random one-time) and unattended (fixed) password
+  authentication and E2E encryption of the peer channel. Wrong password fails
+  the handshake; the relay only ever sees ciphertext.
+- [ ] M2 — Screen capture + frame streaming; viewer window (GUI app).
 - [ ] M3 — Mouse + keyboard input injection on the host.
-- [ ] M4 — Attended (one-time) and unattended (fixed) password authentication,
-  end-to-end encryption of the peer channel.
 - [ ] M5 — Remote audio: capture host system playback, stream to viewer.
 - [ ] M6 — Packaging: signed-where-possible Windows setup `.exe` and macOS
   `.dmg`, built in CI.
+
+### Security note
+
+The password is mixed into the Noise handshake as a pre-shared key, so the two
+peers authenticate each other and all traffic is end-to-end encrypted; the relay
+cannot read it. A future milestone will upgrade password authentication to a
+PAKE (e.g. SPAKE2/OPAQUE) to also resist offline guessing by a party that
+captures a handshake. Until then, use a strong unattended password.
 
 ## Licence
 

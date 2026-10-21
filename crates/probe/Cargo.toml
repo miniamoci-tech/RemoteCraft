@@ -14,5 +14,6 @@ path = "src/main.rs"
 
 [dependencies]
 remotecraft-core = { path = "../core" }
+remotecraft-net = { path = "../net" }
 tokio = { workspace = true }
 anyhow = { workspace = true }

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/relay",
+    "crates/net",
     "crates/probe",
 ]
 
@@ -23,3 +24,6 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 anyhow = "1.0.100"
 thiserror = "2.0.17"
+snow = "0.9.6"
+sha2 = "0.10.9"
+rand = "0.8.5"

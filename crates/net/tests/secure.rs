@@ -1,0 +1,83 @@
+//! End-to-end: two clients register with a real relay, pair, run the Noise
+//! handshake with a password, and exchange encrypted payloads. A wrong
+//! password must make the handshake fail.
+
+use std::time::Duration;
+
+use remotecraft_net::{RelayClient, SecureChannel};
+use remotecraft_relay::Relay;
+use tokio::net::TcpListener;
+
+async fn start_relay() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(Relay::new().serve(listener));
+    format!("127.0.0.1:{}", addr.port())
+}
+
+#[tokio::test]
+async fn correct_password_establishes_encrypted_channel() {
+    let relay = start_relay().await;
+
+    // Host registers and waits.
+    let mut host = RelayClient::connect(&relay, None).await.expect("host connect");
+    let host_id = host.id().to_string();
+
+    let host_task = tokio::spawn(async move {
+        host.wait_for_peer().await.expect("peer");
+        let mut sc = SecureChannel::handshake(&mut host, false, "correct horse")
+            .await
+            .expect("host handshake");
+        // Receive one encrypted message, echo it back encrypted.
+        let msg = sc.recv(&mut host).await.expect("recv");
+        sc.send(&host, &msg).await.expect("send");
+    });
+
+    // Viewer connects.
+    let mut viewer = RelayClient::connect(&relay, None).await.expect("viewer connect");
+    viewer.connect_to(&host_id).await.expect("pair");
+    let mut sc = SecureChannel::handshake(&mut viewer, true, "correct horse")
+        .await
+        .expect("viewer handshake");
+
+    sc.send(&viewer, b"secret payload").await.expect("send");
+    let echoed = sc.recv(&mut viewer).await.expect("recv echo");
+    assert_eq!(echoed, b"secret payload");
+
+    host_task.await.expect("host task");
+}
+
+#[tokio::test]
+async fn wrong_password_fails_handshake() {
+    let relay = start_relay().await;
+
+    let mut host = RelayClient::connect(&relay, None).await.expect("host connect");
+    let host_id = host.id().to_string();
+
+    let host_task = tokio::spawn(async move {
+        host.wait_for_peer().await.expect("peer");
+        // Host uses the real password; viewer will use a different one.
+        SecureChannel::handshake(&mut host, false, "real-password").await
+    });
+
+    let mut viewer = RelayClient::connect(&relay, None).await.expect("viewer connect");
+    viewer.connect_to(&host_id).await.expect("pair");
+
+    // Viewer uses the wrong password. Bound with a timeout so a hang fails.
+    let viewer_result = tokio::time::timeout(
+        Duration::from_secs(5),
+        SecureChannel::handshake(&mut viewer, true, "wrong-password"),
+    )
+    .await;
+
+    let host_result = tokio::time::timeout(Duration::from_secs(5), host_task)
+        .await
+        .expect("host task timed out")
+        .expect("host task join");
+
+    // The host must reject the mismatched handshake.
+    assert!(host_result.is_err(), "host should reject wrong password");
+    // The viewer either errors or times out; both mean no channel was formed.
+    let viewer_ok = matches!(viewer_result, Ok(Ok(_)));
+    assert!(!viewer_ok, "viewer must not establish a channel with wrong password");
+}
