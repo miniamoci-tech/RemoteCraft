@@ -64,14 +64,6 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 /// Must run on the main thread: it drives `eframe::run_native`, which owns the
 /// event loop and only returns when the window closes.
 pub fn run_with(relay: String, target: String, password: String) -> anyhow::Result<()> {
-    let shared = Arc::new(Mutex::new(ViewerState {
-        status: "Starting ...".to_string(),
-        ..Default::default()
-    }));
-
-    // Outbound application messages: GUI/network -> host.
-    let (out_tx, out_rx) = mpsc::unbounded_channel::<AppMessage>();
-
     let runtime = tokio::runtime::Runtime::new()?;
     let handle = runtime.handle().clone();
 
@@ -81,34 +73,17 @@ pub fn run_with(relay: String, target: String, password: String) -> anyhow::Resu
     };
 
     let title = format!("RemoteCraft — {target}");
-    let shared_for_app = shared.clone();
-    let out_rx = std::sync::Mutex::new(Some(out_rx));
-    let out_tx_for_app = out_tx.clone();
-
     let result = eframe::run_native(
         &title,
         options,
         Box::new(move |cc| {
-            let ctx = cc.egui_ctx.clone();
-            let shared_net = shared.clone();
-            let relay = relay.clone();
-            let target = target.clone();
-            let password = password.clone();
-            let out_tx_net = out_tx.clone();
-            let rx = out_rx.lock().ok().and_then(|mut g| g.take());
-            if let Some(rx) = rx {
-                handle.spawn(async move {
-                    network(ctx, shared_net, relay, target, password, out_tx_net, rx).await;
-                });
-            }
-            Ok(Box::new(ViewerApp {
-                shared: shared_for_app,
-                texture: None,
-                shown_version: u64::MAX,
-                out_tx: out_tx_for_app.clone(),
-                show_files: false,
-                fullscreen: false,
-            }))
+            Ok(Box::new(start_viewer(
+                &handle,
+                cc.egui_ctx.clone(),
+                relay,
+                target,
+                password,
+            )))
         }),
     );
 
@@ -116,7 +91,42 @@ pub fn run_with(relay: String, target: String, password: String) -> anyhow::Resu
     result.map_err(|e| anyhow::anyhow!("gui error: {e}"))
 }
 
-struct ViewerApp {
+/// Build a viewer and start its network task on `handle`, reporting into the
+/// given egui `ctx`. Used both by the CLI (`run_with`) and the launcher, which
+/// embeds the returned app in its own event loop (one loop per process — a
+/// second `run_native` aborts on macOS).
+pub fn start_viewer(
+    handle: &tokio::runtime::Handle,
+    ctx: egui::Context,
+    relay: String,
+    target: String,
+    password: String,
+) -> ViewerApp {
+    let shared = Arc::new(Mutex::new(ViewerState {
+        status: "Starting ...".to_string(),
+        ..Default::default()
+    }));
+
+    // Outbound application messages: GUI/network -> host.
+    let (out_tx, out_rx) = mpsc::unbounded_channel::<AppMessage>();
+
+    let shared_net = shared.clone();
+    let out_tx_net = out_tx.clone();
+    handle.spawn(async move {
+        network(ctx, shared_net, relay, target, password, out_tx_net, out_rx).await;
+    });
+
+    ViewerApp {
+        shared,
+        texture: None,
+        shown_version: u64::MAX,
+        out_tx,
+        show_files: false,
+        fullscreen: false,
+    }
+}
+
+pub struct ViewerApp {
     shared: Arc<Mutex<ViewerState>>,
     texture: Option<egui::TextureHandle>,
     shown_version: u64,

@@ -1,15 +1,14 @@
 //! Graphical launcher.
 //!
-//! A small window shown when `remotecraft` is started with no arguments (for
+//! A single window shown when `remotecraft` is started with no arguments (for
 //! example from the Start-menu / Finder icon). It lets a non-technical person
 //! pick a role — share this screen, or view another computer — and fill in the
 //! few fields, instead of using the command line.
 //!
-//! The launcher only *collects* a choice. `eframe` owns the main-thread event
-//! loop, so once the user clicks Start the launcher window closes, its event
-//! loop returns, and `run` then opens the real window for the chosen role (the
-//! viewer window, or a small host status window). This avoids nesting one
-//! `eframe` app inside another.
+//! One event loop for the whole process: `RootApp` starts on the launcher
+//! screen and, when the user clicks Start, *switches* in place to the viewer
+//! or host screen. It never calls `eframe::run_native` a second time — doing
+//! so aborts on macOS (AppKit tears down the first event loop's observers).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -18,7 +17,7 @@ use std::time::Duration;
 use remotecraft_net::random_password;
 
 use crate::host::{self, HostConfig, HostStatus, SharedHostStatus};
-use crate::viewer;
+use crate::viewer::{self, ViewerApp};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -34,7 +33,7 @@ enum HostAccess {
     Unattended,
 }
 
-/// What the launcher produced; acted on after its window closes.
+/// What the launcher produced; the root app acts on it by switching screen.
 enum Choice {
     View {
         relay: String,
@@ -44,10 +43,11 @@ enum Choice {
     Host(HostConfig),
 }
 
-/// Entry point: show the launcher, then run the chosen role.
+/// Entry point: run the single-window app (launcher, then the chosen role).
 pub fn run() -> anyhow::Result<()> {
     let settings = Settings::load();
-    let choice: Arc<Mutex<Option<Choice>>> = Arc::new(Mutex::new(None));
+    let runtime = tokio::runtime::Runtime::new()?;
+    let handle = runtime.handle().clone();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -56,24 +56,74 @@ pub fn run() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let choice_for_app = choice.clone();
     let result = eframe::run_native(
         "RemoteCraft",
         options,
-        Box::new(move |_cc| Ok(Box::new(LauncherApp::new(settings, choice_for_app)))),
+        Box::new(move |_cc| {
+            Ok(Box::new(RootApp {
+                screen: Screen::Launcher,
+                launcher: LauncherApp::new(settings),
+                handle,
+            }))
+        }),
     );
-    result.map_err(|e| anyhow::anyhow!("gui error: {e}"))?;
+    // Dropping the runtime stops any background host/viewer task.
+    drop(runtime);
+    result.map_err(|e| anyhow::anyhow!("gui error: {e}"))
+}
 
-    // The launcher window has closed; act on what the user chose (if anything).
-    let chosen = choice.lock().ok().and_then(|mut c| c.take());
-    match chosen {
-        Some(Choice::View {
-            relay,
-            id,
-            password,
-        }) => viewer::run_with(relay, id, password),
-        Some(Choice::Host(config)) => host_window(config),
-        None => Ok(()),
+/// Which screen the single window is currently showing.
+enum Screen {
+    Launcher,
+    Viewer(ViewerApp),
+    Host(HostWindow),
+}
+
+/// The one eframe app for the whole process. It owns the current screen and
+/// the tokio runtime handle used to start the viewer/host background work.
+struct RootApp {
+    screen: Screen,
+    launcher: LauncherApp,
+    handle: tokio::runtime::Handle,
+}
+
+impl RootApp {
+    /// Switch from the launcher to the chosen role, in the same window.
+    fn transition(&mut self, ctx: &egui::Context, choice: Choice) {
+        match choice {
+            Choice::View {
+                relay,
+                id,
+                password,
+            } => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1360.0, 820.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("RemoteCraft — {id}")));
+                let app = viewer::start_viewer(&self.handle, ctx.clone(), relay, id, password);
+                self.screen = Screen::Viewer(app);
+            }
+            Choice::Host(config) => {
+                let win = HostWindow::start(&self.handle, ctx.clone(), config);
+                self.screen = Screen::Host(win);
+            }
+        }
+    }
+}
+
+impl eframe::App for RootApp {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        match &mut self.screen {
+            Screen::Launcher => {
+                let mut choice = None;
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    choice = self.launcher.ui(ui);
+                });
+                if let Some(choice) = choice {
+                    self.transition(ctx, choice);
+                }
+            }
+            Screen::Viewer(app) => app.update(ctx, frame),
+            Screen::Host(win) => win.update(ctx, frame),
+        }
     }
 }
 
@@ -86,11 +136,10 @@ struct LauncherApp {
     password: String,
     audio: bool,
     error: Option<String>,
-    choice: Arc<Mutex<Option<Choice>>>,
 }
 
 impl LauncherApp {
-    fn new(settings: Settings, choice: Arc<Mutex<Option<Choice>>>) -> Self {
+    fn new(settings: Settings) -> Self {
         Self {
             mode: Mode::View,
             access: HostAccess::Attended,
@@ -99,17 +148,16 @@ impl LauncherApp {
             password: String::new(),
             audio: true,
             error: None,
-            choice,
         }
     }
 
-    /// Validate the fields and, if good, record the choice, remember the
-    /// relay/id for next time, and ask the window to close.
-    fn start(&mut self, ctx: &egui::Context) {
+    /// Validate the fields and, if good, remember the relay/id for next time
+    /// and return the chosen role.
+    fn validate(&mut self) -> Option<Choice> {
         let relay = self.relay.trim().to_string();
         if relay.is_empty() {
             self.error = Some("Enter the relay address (e.g. 192.168.1.50:21118).".to_string());
-            return;
+            return None;
         }
 
         let choice = match self.mode {
@@ -119,11 +167,11 @@ impl LauncherApp {
                 if id.is_empty() {
                     self.error =
                         Some("Enter the ID shown on the computer you want to view.".to_string());
-                    return;
+                    return None;
                 }
                 if password.is_empty() {
                     self.error = Some("Enter the password shown on that computer.".to_string());
-                    return;
+                    return None;
                 }
                 Choice::View {
                     relay: relay.clone(),
@@ -138,7 +186,7 @@ impl LauncherApp {
                         if self.password.is_empty() {
                             self.error =
                                 Some("Set a fixed password for unattended access.".to_string());
-                            return;
+                            return None;
                         }
                         // A fixed ID is optional but recommended so the ID stays
                         // the same across restarts. Empty = let the relay pick.
@@ -152,7 +200,7 @@ impl LauncherApp {
                                 "The fixed ID must be exactly 9 digits (or left empty)."
                                     .to_string(),
                             );
-                            return;
+                            return None;
                         };
                         (self.password.clone(), false, desired)
                     }
@@ -175,16 +223,14 @@ impl LauncherApp {
         }
         .save();
 
-        if let Ok(mut c) = self.choice.lock() {
-            *c = Some(choice);
-        }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        Some(choice)
     }
-}
 
-impl eframe::App for LauncherApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+    /// Draw the launcher UI into `ui`; returns the chosen role when Start is
+    /// clicked with valid fields.
+    fn ui(&mut self, ui: &mut egui::Ui) -> Option<Choice> {
+        let mut chosen = None;
+        {
             ui.add_space(8.0);
             ui.heading("RemoteCraft");
             ui.label("Connect two computers through your relay server.");
@@ -282,7 +328,7 @@ impl eframe::App for LauncherApp {
                 .add_sized([160.0, 32.0], egui::Button::new(start_label))
                 .clicked()
             {
-                self.start(ctx);
+                chosen = self.validate();
             }
 
             if let Some(err) = &self.error {
@@ -300,45 +346,9 @@ impl eframe::App for LauncherApp {
                 .small()
                 .weak(),
             );
-        });
+        }
+        chosen
     }
-}
-
-/// Run a small status window for the host role, started from the launcher.
-///
-/// It shows the ID and (for attended access) the one-time password to read out
-/// to the person connecting, plus a live state line. The host itself runs on a
-/// background tokio runtime and reports into shared state.
-fn host_window(config: HostConfig) -> anyhow::Result<()> {
-    let status: SharedHostStatus = Arc::new(Mutex::new(HostStatus {
-        state: "Starting…".to_string(),
-        ..Default::default()
-    }));
-    let runtime = tokio::runtime::Runtime::new()?;
-    host::spawn_gui(runtime.handle(), config.clone(), status.clone());
-
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([480.0, 380.0])
-            .with_min_inner_size([420.0, 320.0]),
-        ..Default::default()
-    };
-
-    let app = HostWindow {
-        status,
-        relay: config.relay,
-        tray: None,
-        tray_ready: false,
-        quitting: false,
-    };
-    let result = eframe::run_native(
-        "RemoteCraft — sharing this screen",
-        options,
-        Box::new(move |_cc| Ok(Box::new(app))),
-    );
-    // Dropping the runtime stops the background host when the window closes.
-    drop(runtime);
-    result.map_err(|e| anyhow::anyhow!("gui error: {e}"))
 }
 
 struct HostWindow {
@@ -349,6 +359,25 @@ struct HostWindow {
     /// Set when the user really wants to exit (tray "Quit" or in-window button),
     /// so the close request is allowed through instead of hiding to the tray.
     quitting: bool,
+}
+
+impl HostWindow {
+    /// Start the host on `handle`, reporting into shared state, and return the
+    /// window ready to be driven by the root app's event loop.
+    fn start(handle: &tokio::runtime::Handle, _ctx: egui::Context, config: HostConfig) -> Self {
+        let status: SharedHostStatus = Arc::new(Mutex::new(HostStatus {
+            state: "Starting…".to_string(),
+            ..Default::default()
+        }));
+        host::spawn_gui(handle, config.clone(), status.clone());
+        HostWindow {
+            status,
+            relay: config.relay,
+            tray: None,
+            tray_ready: false,
+            quitting: false,
+        }
+    }
 }
 
 impl eframe::App for HostWindow {
