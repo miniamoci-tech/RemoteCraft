@@ -205,6 +205,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "remotecraft-probe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "remotecraft-core",
+ "tokio",
+]
+
+[[package]]
 name = "remotecraft-relay"
 version = "0.1.0"
 dependencies = [
