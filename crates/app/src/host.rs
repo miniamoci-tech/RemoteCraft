@@ -32,9 +32,10 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     };
     let quality: u8 = flag(args, "--quality").and_then(|q| q.parse().ok()).unwrap_or(60);
     let fps: u32 = flag(args, "--fps").and_then(|f| f.parse().ok()).unwrap_or(10).clamp(1, 60);
+    let audio = args.iter().any(|a| a == "--audio");
 
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async move { host_loop(&relay, &password, attended, quality, fps).await })
+    runtime.block_on(async move { host_loop(&relay, &password, attended, quality, fps, audio).await })
 }
 
 async fn host_loop(
@@ -43,6 +44,7 @@ async fn host_loop(
     attended: bool,
     quality: u8,
     fps: u32,
+    audio: bool,
 ) -> anyhow::Result<()> {
     let active = Arc::new(AtomicBool::new(false));
     let (frame_tx, mut frame_rx) = mpsc::channel::<CaptureMsg>(2);
@@ -68,6 +70,9 @@ async fn host_loop(
     } else {
         println!("  Password:  (fixed, unattended access)");
     }
+    if audio {
+        println!("  Audio:     remote playback will be streamed to the viewer.");
+    }
     println!("\nOn the viewer run:");
     println!("  remotecraft view --relay {relay} --id {id} --password <password>\n");
     println!("Waiting for a viewer (Ctrl+C to stop) ...");
@@ -91,7 +96,7 @@ async fn host_loop(
         };
         println!("[+] Authenticated. Screen + input + file transfer active.");
 
-        let reason = run_session(&client, &sc, &mut frame_rx, &active, width, height).await;
+        let reason = run_session(&client, &sc, &mut frame_rx, &active, width, height, audio).await;
         active.store(false, Ordering::Relaxed);
         println!("[-] Session ended: {reason}. Waiting for a new viewer ...");
     }
@@ -104,6 +109,7 @@ async fn run_session(
     active: &Arc<AtomicBool>,
     width: u32,
     height: u32,
+    audio: bool,
 ) -> String {
     // One outbound sender task serializes all messages onto the wire, so the
     // chunks of a frame and a file never interleave.
@@ -133,6 +139,10 @@ async fn run_session(
 
     let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
     std::thread::spawn(move || injection_thread(width, height, input_rx));
+
+    if audio {
+        start_audio(out_tx.clone());
+    }
 
     active.store(true, Ordering::Relaxed);
 
@@ -201,6 +211,32 @@ async fn handle_incoming(
             Err(_) => {}
         }
     }
+}
+
+/// Start loopback audio capture and forward PCM blocks to the outbound queue.
+/// Capture runs on its own thread; a bridge thread moves batches onto the
+/// async sender. If capture is unavailable, logs and continues without audio.
+fn start_audio(out_tx: mpsc::Sender<AppMessage>) {
+    let (atx, arx) = std::sync::mpsc::channel::<(remotecraft_audio::AudioFormat, Vec<i16>)>();
+    if let Err(e) = remotecraft_audio::spawn_capture(atx) {
+        println!("[audio] disabled: {e}");
+        return;
+    }
+    std::thread::spawn(move || {
+        while let Ok((fmt, pcm)) = arx.recv() {
+            if pcm.is_empty() {
+                continue;
+            }
+            let msg = AppMessage::Audio {
+                sample_rate: fmt.sample_rate,
+                channels: fmt.channels,
+                pcm,
+            };
+            if out_tx.blocking_send(msg).is_err() {
+                break; // session ended
+            }
+        }
+    });
 }
 
 fn injection_thread(width: u32, height: u32, mut rx: mpsc::Receiver<InputEvent>) {

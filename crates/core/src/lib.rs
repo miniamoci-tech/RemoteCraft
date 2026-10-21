@@ -120,6 +120,15 @@ pub enum AppMessage {
     FileEnd,
     /// Host could not serve a list or file request.
     FileError { message: String },
+
+    // --- Remote audio, host -> viewer (M5) ---
+    /// A block of PCM audio captured from the host's playback output.
+    /// `pcm` is interleaved 16-bit signed samples.
+    Audio {
+        sample_rate: u32,
+        channels: u16,
+        pcm: Vec<i16>,
+    },
 }
 
 /// One entry in a remote directory listing. `path` is the entry's full path on

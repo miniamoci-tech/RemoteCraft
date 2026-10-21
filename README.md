@@ -97,7 +97,11 @@ error LNK1104, point the build output at a plain path:
   files (e.g. a recording made on the office PC) to its own
   `~/RemoteCraft-Downloads`, streamed in chunks over the encrypted channel.
   (Host→viewer download; viewer→host upload is a later addition.)
-- [ ] M5 — Remote audio: capture host system playback, stream to viewer.
+- [x] M5 — Remote audio: the host captures its playback output (WASAPI
+  loopback on Windows) and streams 16-bit PCM to the viewer, which plays it
+  through its default output device (cpal). Enabled with `host --audio`.
+  macOS host audio capture is not implemented yet (needs ScreenCaptureKit or a
+  virtual device); the viewer plays audio on any platform.
 - [ ] M7 — Packaging: signed-where-possible Windows setup `.exe` and macOS
   `.dmg`, built in CI.
 

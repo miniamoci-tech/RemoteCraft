@@ -18,6 +18,7 @@ remotecraft-net = { path = "../net" }
 remotecraft-capture = { path = "../capture" }
 remotecraft-input = { path = "../input" }
 remotecraft-files = { path = "../files" }
+remotecraft-audio = { path = "../audio" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

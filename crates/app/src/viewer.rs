@@ -386,6 +386,29 @@ fn letter_or_digit(key: egui::Key) -> Option<char> {
     Some(c)
 }
 
+/// Owns the audio player (cpal stream is not Send). Creates it on the first
+/// audio block and recreates it if the format changes. If the output device
+/// can't play the stream, audio is silently skipped.
+fn audio_thread(rx: std::sync::mpsc::Receiver<(remotecraft_audio::AudioFormat, Vec<i16>)>) {
+    let mut player: Option<(remotecraft_audio::AudioFormat, remotecraft_audio::AudioPlayer)> = None;
+    while let Ok((fmt, pcm)) = rx.recv() {
+        let need_new = !matches!(&player, Some((f, _)) if *f == fmt);
+        if need_new {
+            match remotecraft_audio::AudioPlayer::new(fmt) {
+                Ok(p) => player = Some((fmt, p)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "audio playback unavailable");
+                    player = None;
+                    continue;
+                }
+            }
+        }
+        if let Some((_, p)) = &player {
+            p.push(&pcm);
+        }
+    }
+}
+
 /// Directory where downloads are saved on the viewer's machine.
 fn download_dir() -> PathBuf {
     let home = std::env::var("USERPROFILE")
@@ -429,6 +452,11 @@ async fn network(
     };
 
     let client = Arc::new(client);
+
+    // Audio playback runs on its own thread (cpal stream is not Send).
+    let (audio_tx, audio_rx) =
+        std::sync::mpsc::channel::<(remotecraft_audio::AudioFormat, Vec<i16>)>();
+    std::thread::spawn(move || audio_thread(audio_rx));
 
     // Outbound task: drain GUI/network messages and send them encrypted.
     let send_client = client.clone();
@@ -514,6 +542,10 @@ async fn network(
                 Ok(AppMessage::FileError { message }) => {
                     mark_download_error(&shared, &ctx, &message);
                     download = None;
+                }
+                Ok(AppMessage::Audio { sample_rate, channels, pcm }) => {
+                    let fmt = remotecraft_audio::AudioFormat { sample_rate, channels };
+                    let _ = audio_tx.send((fmt, pcm));
                 }
                 Ok(_) => {}
                 Err(_) => {}
