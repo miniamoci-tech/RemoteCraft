@@ -96,6 +96,8 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 texture: None,
                 shown_version: u64::MAX,
                 out_tx: out_tx_for_app.clone(),
+                show_files: false,
+                fullscreen: false,
             }))
         }),
     );
@@ -109,6 +111,9 @@ struct ViewerApp {
     texture: Option<egui::TextureHandle>,
     shown_version: u64,
     out_tx: mpsc::UnboundedSender<AppMessage>,
+    /// File panel starts hidden so the remote screen uses the whole window.
+    show_files: bool,
+    fullscreen: bool,
 }
 
 impl eframe::App for ViewerApp {
@@ -141,14 +146,20 @@ impl eframe::App for ViewerApp {
 
         egui::TopBottomPanel::top("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Status:");
+                ui.toggle_value(&mut self.show_files, "📁 Files");
+                if ui.toggle_value(&mut self.fullscreen, "⛶ Fullscreen").changed() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+                }
+                ui.separator();
                 ui.label(&status);
             });
         });
 
-        egui::SidePanel::left("files")
-            .default_width(320.0)
-            .show(ctx, |ui| self.file_panel(ui, listing.as_ref(), download.as_ref()));
+        if self.show_files {
+            egui::SidePanel::left("files")
+                .default_width(320.0)
+                .show(ctx, |ui| self.file_panel(ui, listing.as_ref(), download.as_ref()));
+        }
 
         let mut image_rect = None;
         egui::CentralPanel::default().show(ctx, |ui| match &self.texture {
