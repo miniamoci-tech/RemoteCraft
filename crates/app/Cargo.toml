@@ -17,6 +17,7 @@ remotecraft-core = { path = "../core" }
 remotecraft-net = { path = "../net" }
 remotecraft-capture = { path = "../capture" }
 remotecraft-input = { path = "../input" }
+remotecraft-files = { path = "../files" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

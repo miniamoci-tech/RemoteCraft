@@ -6,6 +6,7 @@ members = [
     "crates/net",
     "crates/capture",
     "crates/input",
+    "crates/files",
     "crates/app",
     "crates/probe",
 ]

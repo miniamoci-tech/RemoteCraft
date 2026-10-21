@@ -3424,6 +3424,7 @@ dependencies = [
  "image",
  "remotecraft-capture",
  "remotecraft-core",
+ "remotecraft-files",
  "remotecraft-input",
  "remotecraft-net",
  "tokio",
@@ -3452,6 +3453,15 @@ dependencies = [
  "bincode",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "remotecraft-files"
+version = "0.1.0"
+dependencies = [
+ "remotecraft-core",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

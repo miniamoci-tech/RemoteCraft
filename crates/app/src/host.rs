@@ -1,11 +1,10 @@
-//! Host role: capture this screen, stream it to an authenticated viewer, and
-//! apply the viewer's mouse/keyboard input.
+//! Host role: capture this screen, stream it to an authenticated viewer, apply
+//! the viewer's mouse/keyboard input, and serve file-transfer requests.
 //!
-//! Three threads/tasks cooperate per session:
-//! - a capture thread owns the (!Send) screen capturer and pushes JPEG frames;
-//! - an injection thread owns the (!Send) input injector and applies events;
-//! - async tasks move frames out and input in over one shared, cloneable
-//!   [`SecureChannel`] / [`RelayClient`].
+//! All outbound messages (screen frames and file-transfer replies) go through
+//! one sender task, so the chunks of two logical messages never interleave on
+//! the wire. The (!Send) screen capturer and input injector each live on their
+//! own dedicated thread.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,7 +18,6 @@ use tokio::sync::mpsc;
 
 use crate::flag;
 
-/// Messages from the capture thread to the async side.
 enum CaptureMsg {
     Ready { width: u32, height: u32 },
     Frame(Frame),
@@ -91,7 +89,7 @@ async fn host_loop(
                 continue;
             }
         };
-        println!("[+] Authenticated. Streaming at {fps} fps, quality {quality}; input enabled.");
+        println!("[+] Authenticated. Screen + input + file transfer active.");
 
         let reason = run_session(&client, &sc, &mut frame_rx, &active, width, height).await;
         active.store(false, Ordering::Relaxed);
@@ -99,8 +97,6 @@ async fn host_loop(
     }
 }
 
-/// Run one viewer session: send HostInfo, then stream frames and apply input
-/// concurrently until either direction fails.
 async fn run_session(
     client: &Arc<RelayClient>,
     sc: &SecureChannel,
@@ -109,36 +105,48 @@ async fn run_session(
     width: u32,
     height: u32,
 ) -> String {
-    let info = AppMessage::HostInfo {
-        screen_width: width,
-        screen_height: height,
-    };
-    match to_bytes(&info) {
-        Ok(bytes) => {
-            if let Err(e) = sc.send_message(client, &bytes).await {
-                return format!("viewer gone before first frame: {e}");
+    // One outbound sender task serializes all messages onto the wire, so the
+    // chunks of a frame and a file never interleave.
+    let (out_tx, mut out_rx) = mpsc::channel::<AppMessage>(16);
+    let send_sc = sc.clone();
+    let send_client = client.clone();
+    let sender = tokio::spawn(async move {
+        while let Some(msg) = out_rx.recv().await {
+            let bytes = match to_bytes(&msg) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if send_sc.send_message(&send_client, &bytes).await.is_err() {
+                break;
             }
         }
-        Err(e) => return format!("encode HostInfo: {e}"),
+    });
+
+    if out_tx
+        .send(AppMessage::HostInfo { screen_width: width, screen_height: height })
+        .await
+        .is_err()
+    {
+        sender.abort();
+        return "viewer gone before first frame".to_string();
     }
 
-    // Input injection thread.
     let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
     std::thread::spawn(move || injection_thread(width, height, input_rx));
 
     active.store(true, Ordering::Relaxed);
 
-    // Frames out and input in run concurrently; first to finish ends the session.
-    tokio::select! {
-        r = stream_frames(client, sc, frame_rx) => r,
-        r = recv_input(client, sc, &input_tx) => r,
-    }
+    let reason = tokio::select! {
+        r = produce_frames(frame_rx, &out_tx) => r,
+        r = handle_incoming(client, sc, &out_tx, &input_tx) => r,
+    };
+    sender.abort();
+    reason
 }
 
-async fn stream_frames(
-    client: &Arc<RelayClient>,
-    sc: &SecureChannel,
+async fn produce_frames(
     frame_rx: &mut mpsc::Receiver<CaptureMsg>,
+    out_tx: &mpsc::Sender<AppMessage>,
 ) -> String {
     loop {
         let msg = match frame_rx.recv().await {
@@ -150,24 +158,24 @@ async fn stream_frames(
             CaptureMsg::Error(e) => return format!("capture error: {e}"),
             CaptureMsg::Ready { .. } => continue,
         };
-        let app = AppMessage::Frame {
-            width: frame.width,
-            height: frame.height,
-            jpeg: frame.jpeg,
-        };
-        let bytes = match to_bytes(&app) {
-            Ok(b) => b,
-            Err(e) => return format!("encode frame: {e}"),
-        };
-        if let Err(e) = sc.send_message(client, &bytes).await {
-            return format!("{e}");
+        if out_tx
+            .send(AppMessage::Frame {
+                width: frame.width,
+                height: frame.height,
+                jpeg: frame.jpeg,
+            })
+            .await
+            .is_err()
+        {
+            return "sender stopped".to_string();
         }
     }
 }
 
-async fn recv_input(
+async fn handle_incoming(
     client: &Arc<RelayClient>,
     sc: &SecureChannel,
+    out_tx: &mpsc::Sender<AppMessage>,
     input_tx: &mpsc::Sender<InputEvent>,
 ) -> String {
     loop {
@@ -177,16 +185,24 @@ async fn recv_input(
         };
         match decode_frame::<AppMessage>(&bytes) {
             Ok(AppMessage::Input(ev)) => {
-                // Drop if the injector is backed up rather than stalling recv.
                 let _ = input_tx.try_send(ev);
             }
-            Ok(_) => {} // viewer shouldn't send other messages
+            Ok(AppMessage::ListDir { path }) => {
+                if out_tx.send(remotecraft_files::list_dir(&path)).await.is_err() {
+                    return "sender stopped".to_string();
+                }
+            }
+            Ok(AppMessage::GetFile { path }) => {
+                if remotecraft_files::stream_file(&path, out_tx).await.is_err() {
+                    return "sender stopped".to_string();
+                }
+            }
+            Ok(_) => {}
             Err(_) => {}
         }
     }
 }
 
-/// Owns the (!Send) input injector; applies events until the channel closes.
 fn injection_thread(width: u32, height: u32, mut rx: mpsc::Receiver<InputEvent>) {
     let mut injector = match InputInjector::new(width, height) {
         Ok(i) => i,
@@ -202,7 +218,6 @@ fn injection_thread(width: u32, height: u32, mut rx: mpsc::Receiver<InputEvent>)
     }
 }
 
-/// Owns the (!Send) screen capturer; captures while `active`.
 fn capture_thread(
     quality: u8,
     interval: Duration,

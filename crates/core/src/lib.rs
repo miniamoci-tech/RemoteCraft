@@ -99,6 +99,38 @@ pub enum AppMessage {
     ViewerReady,
     /// An input event from the viewer to apply on the host (M3).
     Input(InputEvent),
+
+    // --- File transfer, host <-> viewer (M6) ---
+    /// Viewer asks the host to list a directory. Empty string = host's home.
+    ListDir { path: String },
+    /// Host's reply with a directory's entries.
+    DirListing {
+        path: String,
+        /// Parent directory to navigate up to, if any.
+        parent: Option<String>,
+        entries: Vec<DirEntry>,
+    },
+    /// Viewer asks the host to send a file by absolute path.
+    GetFile { path: String },
+    /// Host announces the start of a file download.
+    FileStart { name: String, size: u64 },
+    /// One ordered chunk of the file currently being downloaded.
+    FileChunk { data: Vec<u8> },
+    /// Host signals the end of the current file download.
+    FileEnd,
+    /// Host could not serve a list or file request.
+    FileError { message: String },
+}
+
+/// One entry in a remote directory listing. `path` is the entry's full path on
+/// the host, so the viewer navigates and downloads without having to join
+/// paths itself (host and viewer may run different operating systems).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
 }
 
 /// Mouse buttons the viewer can forward to the host.

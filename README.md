@@ -93,8 +93,12 @@ error LNK1104, point the build output at a plain path:
   clicks, scroll, typed text and shortcuts; the host injects them (enigo).
   Coordinates are normalized, so it is resolution-independent. On macOS the
   host needs the "Accessibility" permission.
+- [x] M6 — File transfer: the viewer browses the host's folders and downloads
+  files (e.g. a recording made on the office PC) to its own
+  `~/RemoteCraft-Downloads`, streamed in chunks over the encrypted channel.
+  (Host→viewer download; viewer→host upload is a later addition.)
 - [ ] M5 — Remote audio: capture host system playback, stream to viewer.
-- [ ] M6 — Packaging: signed-where-possible Windows setup `.exe` and macOS
+- [ ] M7 — Packaging: signed-where-possible Windows setup `.exe` and macOS
   `.dmg`, built in CI.
 
 ### Security note
