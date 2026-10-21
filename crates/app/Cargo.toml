@@ -27,3 +27,9 @@ bincode = { workspace = true }
 image = { workspace = true }
 eframe = "0.29.1"
 egui = "0.29.1"
+
+# Windows-only: system-tray icon so the host window can minimize/close to the
+# notification area instead of the taskbar. Kept off other platforms so the
+# macOS build pulls no extra system dependencies.
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.19"

@@ -26,6 +26,7 @@
 
 mod host;
 mod launcher;
+mod tray;
 mod viewer;
 
 fn main() -> anyhow::Result<()> {

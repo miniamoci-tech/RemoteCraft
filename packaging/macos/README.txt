@@ -1,26 +1,29 @@
 RemoteCraft for macOS
 =====================
 
-This disk image contains two command-line programs (universal, Intel + Apple
-Silicon):
+This disk image contains (universal, Intel + Apple Silicon):
 
-  remotecraft        - the app: share this screen (host) or view a remote one
+  RemoteCraft.app    - double-click to open the graphical launcher
+  remotecraft        - the same program for command-line use
   remotecraft-relay  - the rendezvous/relay server (usually run on Linux)
 
-INSTALL
--------
-Copy the two files somewhere on your PATH, for example:
+EASY WAY (graphical)
+--------------------
+1. Drag RemoteCraft.app to your Applications folder.
+2. Because the app is not signed with an Apple Developer certificate, the
+   first time macOS will block it. Right-click the app -> Open -> Open, or
+   allow it once in System Settings > Privacy & Security ("Open Anyway").
+3. It opens a window: choose "View another computer" or "Share this screen",
+   fill in the relay address, ID and password, and connect.
+
+COMMAND LINE (optional)
+-----------------------
+Copy the plain binaries somewhere on your PATH, for example:
 
   sudo cp remotecraft remotecraft-relay /usr/local/bin/
-
-Because the apps are not signed with an Apple Developer certificate, the first
-time you run one macOS will block it. Allow it once with:
-
   xattr -d com.apple.quarantine /usr/local/bin/remotecraft
   xattr -d com.apple.quarantine /usr/local/bin/remotecraft-relay
 
-USE
----
 View a remote host:
 
   remotecraft view --relay HOST:21118 --id 123456789 --password YOURPASS

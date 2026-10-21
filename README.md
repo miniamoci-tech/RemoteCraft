@@ -135,6 +135,12 @@ downloadable run artifacts without creating a release.
   computer or share this screen (attended one-time or unattended fixed
   password) — and fills the fields in, so no command line is needed. The host
   role gets a status window showing the ID and one-time password to read out.
+  On macOS the `.dmg` ships a double-clickable `RemoteCraft.app`; on Windows the
+  host status window can minimize/close to the system tray and keep sharing.
+- [ ] M9 — Unattended Windows service: run as a SYSTEM service that can show the
+  real login/lock screen (secure desktop) to the viewer and accept the Windows
+  password, like AnyDesk/TeamViewer unattended access. Needs an admin install
+  and isolated Win32 FFI. Until then, enable Windows auto-login on the host.
 
 ### Security note
 

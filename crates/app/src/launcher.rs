@@ -327,6 +327,9 @@ fn host_window(config: HostConfig) -> anyhow::Result<()> {
     let app = HostWindow {
         status,
         relay: config.relay,
+        tray: None,
+        tray_ready: false,
+        quitting: false,
     };
     let result = eframe::run_native(
         "RemoteCraft — sharing this screen",
@@ -341,10 +344,22 @@ fn host_window(config: HostConfig) -> anyhow::Result<()> {
 struct HostWindow {
     status: SharedHostStatus,
     relay: String,
+    tray: Option<crate::tray::Tray>,
+    tray_ready: bool,
+    /// Set when the user really wants to exit (tray "Quit" or in-window button),
+    /// so the close request is allowed through instead of hiding to the tray.
+    quitting: bool,
 }
 
 impl eframe::App for HostWindow {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Create the tray icon once, on the first frame (main thread).
+        if !self.tray_ready {
+            self.tray_ready = true;
+            self.tray = crate::tray::Tray::new(ctx.clone());
+        }
+        self.handle_tray(ctx);
+
         let snapshot = self.status.lock().ok().map(|s| s.clone());
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -423,15 +438,72 @@ impl eframe::App for HostWindow {
                 );
             }
             ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if self.tray.is_some() && ui.button("Minimize to tray").clicked() {
+                    hide_to_tray(ctx);
+                }
+                if ui.button("Quit (stop sharing)").clicked() {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
             ui.label(
-                egui::RichText::new("Close this window to stop sharing.")
-                    .small()
-                    .weak(),
+                egui::RichText::new(if self.tray.is_some() {
+                    "Minimizing or closing keeps RemoteCraft running in the tray \
+                     (next to the clock). Use Quit to stop sharing."
+                } else {
+                    "Close this window to stop sharing."
+                })
+                .small()
+                .weak(),
             );
         });
 
         ctx.request_repaint_after(Duration::from_millis(300));
     }
+}
+
+impl HostWindow {
+    /// Act on tray-menu clicks and on close/minimize while a tray icon exists.
+    fn handle_tray(&mut self, ctx: &egui::Context) {
+        if self.tray.is_none() {
+            return;
+        }
+
+        if let Some(tray) = &self.tray {
+            match tray.poll() {
+                crate::tray::TrayAction::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                crate::tray::TrayAction::Show => show_from_tray(ctx),
+                crate::tray::TrayAction::None => {}
+            }
+        }
+
+        // Closing the window hides it to the tray instead of quitting, unless
+        // the user explicitly chose to quit.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            hide_to_tray(ctx);
+        }
+
+        // Minimizing also tucks the window into the tray (off the taskbar).
+        if ctx.input(|i| i.viewport().minimized == Some(true)) {
+            hide_to_tray(ctx);
+        }
+    }
+}
+
+fn hide_to_tray(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+}
+
+fn show_from_tray(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
 }
 
 fn selectable_mono(ui: &mut egui::Ui, text: &str) {

@@ -85,6 +85,20 @@ jobs:
             target/aarch64-apple-darwin/release/remotecraft-relay
           cp packaging/macos/README.txt dist/dmg/README.txt
 
+      - name: Assemble RemoteCraft.app (double-clickable launcher)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [ -z "$VERSION" ] && VERSION="0.0.0"
+          APP="dist/dmg/RemoteCraft.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          # The app's executable is the universal binary; with no arguments it
+          # opens the graphical launcher. Bundle the relay too for CLI use.
+          cp dist/dmg/remotecraft "$APP/Contents/MacOS/remotecraft"
+          cp dist/dmg/remotecraft-relay "$APP/Contents/MacOS/remotecraft-relay"
+          chmod +x "$APP/Contents/MacOS/remotecraft" "$APP/Contents/MacOS/remotecraft-relay"
+          sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          echo "APPL????" > "$APP/Contents/PkgInfo"
+
       - name: Build .dmg
         run: |
           hdiutil create -volname RemoteCraft -srcfolder dist/dmg \
