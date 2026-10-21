@@ -25,17 +25,24 @@ enum CaptureMsg {
 }
 
 pub fn run(args: &[String]) -> anyhow::Result<()> {
-    let relay = flag(args, "--relay").ok_or_else(|| anyhow::anyhow!("--relay <host:port> is required"))?;
+    let relay =
+        flag(args, "--relay").ok_or_else(|| anyhow::anyhow!("--relay <host:port> is required"))?;
     let (password, attended) = match flag(args, "--password") {
         Some(p) => (p, false),
         None => (random_password(8), true),
     };
-    let quality: u8 = flag(args, "--quality").and_then(|q| q.parse().ok()).unwrap_or(60);
-    let fps: u32 = flag(args, "--fps").and_then(|f| f.parse().ok()).unwrap_or(10).clamp(1, 60);
+    let quality: u8 = flag(args, "--quality")
+        .and_then(|q| q.parse().ok())
+        .unwrap_or(60);
+    let fps: u32 = flag(args, "--fps")
+        .and_then(|f| f.parse().ok())
+        .unwrap_or(10)
+        .clamp(1, 60);
     let audio = args.iter().any(|a| a == "--audio");
 
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async move { host_loop(&relay, &password, attended, quality, fps, audio).await })
+    runtime
+        .block_on(async move { host_loop(&relay, &password, attended, quality, fps, audio).await })
 }
 
 async fn host_loop(
@@ -129,7 +136,10 @@ async fn run_session(
     });
 
     if out_tx
-        .send(AppMessage::HostInfo { screen_width: width, screen_height: height })
+        .send(AppMessage::HostInfo {
+            screen_width: width,
+            screen_height: height,
+        })
         .await
         .is_err()
     {
@@ -198,7 +208,11 @@ async fn handle_incoming(
                 let _ = input_tx.try_send(ev);
             }
             Ok(AppMessage::ListDir { path }) => {
-                if out_tx.send(remotecraft_files::list_dir(&path)).await.is_err() {
+                if out_tx
+                    .send(remotecraft_files::list_dir(&path))
+                    .await
+                    .is_err()
+                {
                     return "sender stopped".to_string();
                 }
             }

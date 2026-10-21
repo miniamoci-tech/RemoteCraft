@@ -24,13 +24,17 @@ async fn capture_encode_relay_decode_roundtrip() {
     tokio::spawn(Relay::new().serve(listener));
     let relay = format!("127.0.0.1:{}", addr.port());
 
-    let host = RelayClient::connect(&relay, None).await.expect("host connect");
+    let host = RelayClient::connect(&relay, None)
+        .await
+        .expect("host connect");
     let host_id = host.id().to_string();
 
     // Host task: capture 3 frames and send them encrypted.
     let host_task = tokio::spawn(async move {
         host.wait_for_peer().await.expect("peer");
-        let sc = SecureChannel::handshake(&host, false, "pw").await.expect("hs");
+        let sc = SecureChannel::handshake(&host, false, "pw")
+            .await
+            .expect("hs");
         for _ in 0..3 {
             // Build, use and drop the (!Send) capturer entirely before any
             // await, so the task future stays Send. The resulting bytes are.
@@ -55,15 +59,23 @@ async fn capture_encode_relay_decode_roundtrip() {
     });
 
     // Viewer task: pair, authenticate, decode 3 frames.
-    let viewer = RelayClient::connect(&relay, None).await.expect("viewer connect");
+    let viewer = RelayClient::connect(&relay, None)
+        .await
+        .expect("viewer connect");
     viewer.connect_to(&host_id).await.expect("pair");
-    let sc = SecureChannel::handshake(&viewer, true, "pw").await.expect("hs");
+    let sc = SecureChannel::handshake(&viewer, true, "pw")
+        .await
+        .expect("hs");
 
     let mut decoded = 0;
     for _ in 0..3 {
         let bytes = sc.recv_message(&viewer).await.expect("recv frame");
         match decode_frame::<AppMessage>(&bytes).expect("decode app msg") {
-            AppMessage::Frame { width, height, jpeg } => {
+            AppMessage::Frame {
+                width,
+                height,
+                jpeg,
+            } => {
                 assert!(width > 0 && height > 0, "frame has real dimensions");
                 let img = image::load_from_memory(&jpeg).expect("decode jpeg");
                 assert_eq!(img.width(), width);
@@ -78,7 +90,9 @@ async fn capture_encode_relay_decode_roundtrip() {
     // Viewer sends one input event back to the host over the same channel.
     let sent = InputEvent::MouseMove { x: 0.25, y: 0.75 };
     let input_bytes = to_bytes(&AppMessage::Input(sent.clone())).expect("encode input");
-    sc.send_message(&viewer, &input_bytes).await.expect("send input");
+    sc.send_message(&viewer, &input_bytes)
+        .await
+        .expect("send input");
 
     let received = host_task.await.expect("host task");
     assert_eq!(received, sent, "host received the exact input event");

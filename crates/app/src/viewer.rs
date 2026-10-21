@@ -50,9 +50,11 @@ fn set_status(shared: &Arc<Mutex<ViewerState>>, ctx: &egui::Context, text: &str)
 }
 
 pub fn run(args: &[String]) -> anyhow::Result<()> {
-    let relay = flag(args, "--relay").ok_or_else(|| anyhow::anyhow!("--relay <host:port> is required"))?;
+    let relay =
+        flag(args, "--relay").ok_or_else(|| anyhow::anyhow!("--relay <host:port> is required"))?;
     let target = flag(args, "--id").ok_or_else(|| anyhow::anyhow!("--id <id> is required"))?;
-    let password = flag(args, "--password").ok_or_else(|| anyhow::anyhow!("--password <pw> is required"))?;
+    let password =
+        flag(args, "--password").ok_or_else(|| anyhow::anyhow!("--password <pw> is required"))?;
 
     let shared = Arc::new(Mutex::new(ViewerState {
         status: "Starting ...".to_string(),
@@ -137,8 +139,11 @@ impl eframe::App for ViewerApp {
                 match &mut self.texture {
                     Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
                     None => {
-                        self.texture =
-                            Some(ctx.load_texture("remote-screen", image, egui::TextureOptions::LINEAR));
+                        self.texture = Some(ctx.load_texture(
+                            "remote-screen",
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        ));
                     }
                 }
             }
@@ -147,7 +152,10 @@ impl eframe::App for ViewerApp {
         egui::TopBottomPanel::top("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.toggle_value(&mut self.show_files, "📁 Files");
-                if ui.toggle_value(&mut self.fullscreen, "⛶ Fullscreen").changed() {
+                if ui
+                    .toggle_value(&mut self.fullscreen, "⛶ Fullscreen")
+                    .changed()
+                {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
                 }
                 ui.separator();
@@ -158,7 +166,9 @@ impl eframe::App for ViewerApp {
         if self.show_files {
             egui::SidePanel::left("files")
                 .default_width(320.0)
-                .show(ctx, |ui| self.file_panel(ui, listing.as_ref(), download.as_ref()));
+                .show(ctx, |ui| {
+                    self.file_panel(ui, listing.as_ref(), download.as_ref())
+                });
         }
 
         let mut image_rect = None;
@@ -187,7 +197,12 @@ impl eframe::App for ViewerApp {
 }
 
 impl ViewerApp {
-    fn file_panel(&self, ui: &mut egui::Ui, listing: Option<&Listing>, download: Option<&Download>) {
+    fn file_panel(
+        &self,
+        ui: &mut egui::Ui,
+        listing: Option<&Listing>,
+        download: Option<&Download>,
+    ) {
         ui.heading("Remote files");
         ui.separator();
 
@@ -196,26 +211,38 @@ impl ViewerApp {
                 ui.label(egui::RichText::new(&l.path).small().monospace());
                 if let Some(parent) = &l.parent {
                     if ui.button("⬆  Up").clicked() {
-                        self.request(AppMessage::ListDir { path: parent.clone() });
+                        self.request(AppMessage::ListDir {
+                            path: parent.clone(),
+                        });
                     }
                 }
                 ui.separator();
-                egui::ScrollArea::vertical().max_height(ui.available_height() - 120.0).show(ui, |ui| {
-                    for entry in &l.entries {
-                        ui.horizontal(|ui| {
-                            if entry.is_dir {
-                                if ui.button(format!("📁 {}", entry.name)).clicked() {
-                                    self.request(AppMessage::ListDir { path: entry.path.clone() });
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height() - 120.0)
+                    .show(ui, |ui| {
+                        for entry in &l.entries {
+                            ui.horizontal(|ui| {
+                                if entry.is_dir {
+                                    if ui.button(format!("📁 {}", entry.name)).clicked() {
+                                        self.request(AppMessage::ListDir {
+                                            path: entry.path.clone(),
+                                        });
+                                    }
+                                } else {
+                                    if ui.button("⤓").on_hover_text("Download").clicked() {
+                                        self.request(AppMessage::GetFile {
+                                            path: entry.path.clone(),
+                                        });
+                                    }
+                                    ui.label(format!(
+                                        "{}  ({})",
+                                        entry.name,
+                                        human_size(entry.size)
+                                    ));
                                 }
-                            } else {
-                                if ui.button("⤓").on_hover_text("Download").clicked() {
-                                    self.request(AppMessage::GetFile { path: entry.path.clone() });
-                                }
-                                ui.label(format!("{}  ({})", entry.name, human_size(entry.size)));
-                            }
-                        });
-                    }
-                });
+                            });
+                        }
+                    });
             }
             None => {
                 ui.label("Connecting / loading file list ...");
@@ -232,7 +259,11 @@ impl ViewerApp {
                     ui.label(egui::RichText::new(p).small().monospace());
                 }
             } else {
-                let frac = if d.total > 0 { d.received as f32 / d.total as f32 } else { 0.0 };
+                let frac = if d.total > 0 {
+                    d.received as f32 / d.total as f32
+                } else {
+                    0.0
+                };
                 ui.label(format!(
                     "Downloading {} — {} / {}",
                     d.name,
@@ -257,7 +288,12 @@ impl ViewerApp {
                         self.send(InputEvent::MouseMove { x, y });
                     }
                 }
-                egui::Event::PointerButton { pos, button, pressed, .. } => {
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    ..
+                } => {
                     if let Some((x, y)) = normalize(pos, rect) {
                         self.send(InputEvent::MouseMove { x, y });
                     }
@@ -277,7 +313,12 @@ impl ViewerApp {
                         self.send(InputEvent::Text(text));
                     }
                 }
-                egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
                     if let Some(name) = map_key(key) {
                         let is_char = matches!(name, KeyName::Char(_));
                         let shortcut = modifiers.ctrl || modifiers.alt || modifiers.mac_cmd;
@@ -372,15 +413,42 @@ fn map_key(key: egui::Key) -> Option<KeyName> {
 fn letter_or_digit(key: egui::Key) -> Option<char> {
     use egui::Key;
     let c = match key {
-        Key::A => 'a', Key::B => 'b', Key::C => 'c', Key::D => 'd', Key::E => 'e',
-        Key::F => 'f', Key::G => 'g', Key::H => 'h', Key::I => 'i', Key::J => 'j',
-        Key::K => 'k', Key::L => 'l', Key::M => 'm', Key::N => 'n', Key::O => 'o',
-        Key::P => 'p', Key::Q => 'q', Key::R => 'r', Key::S => 's', Key::T => 't',
-        Key::U => 'u', Key::V => 'v', Key::W => 'w', Key::X => 'x', Key::Y => 'y',
+        Key::A => 'a',
+        Key::B => 'b',
+        Key::C => 'c',
+        Key::D => 'd',
+        Key::E => 'e',
+        Key::F => 'f',
+        Key::G => 'g',
+        Key::H => 'h',
+        Key::I => 'i',
+        Key::J => 'j',
+        Key::K => 'k',
+        Key::L => 'l',
+        Key::M => 'm',
+        Key::N => 'n',
+        Key::O => 'o',
+        Key::P => 'p',
+        Key::Q => 'q',
+        Key::R => 'r',
+        Key::S => 's',
+        Key::T => 't',
+        Key::U => 'u',
+        Key::V => 'v',
+        Key::W => 'w',
+        Key::X => 'x',
+        Key::Y => 'y',
         Key::Z => 'z',
-        Key::Num0 => '0', Key::Num1 => '1', Key::Num2 => '2', Key::Num3 => '3',
-        Key::Num4 => '4', Key::Num5 => '5', Key::Num6 => '6', Key::Num7 => '7',
-        Key::Num8 => '8', Key::Num9 => '9',
+        Key::Num0 => '0',
+        Key::Num1 => '1',
+        Key::Num2 => '2',
+        Key::Num3 => '3',
+        Key::Num4 => '4',
+        Key::Num5 => '5',
+        Key::Num6 => '6',
+        Key::Num7 => '7',
+        Key::Num8 => '8',
+        Key::Num9 => '9',
         _ => return None,
     };
     Some(c)
@@ -390,7 +458,10 @@ fn letter_or_digit(key: egui::Key) -> Option<char> {
 /// audio block and recreates it if the format changes. If the output device
 /// can't play the stream, audio is silently skipped.
 fn audio_thread(rx: std::sync::mpsc::Receiver<(remotecraft_audio::AudioFormat, Vec<i16>)>) {
-    let mut player: Option<(remotecraft_audio::AudioFormat, remotecraft_audio::AudioPlayer)> = None;
+    let mut player: Option<(
+        remotecraft_audio::AudioFormat,
+        remotecraft_audio::AudioPlayer,
+    )> = None;
     while let Ok((fmt, pcm)) = rx.recv() {
         let need_new = !matches!(&player, Some((f, _)) if *f == fmt);
         if need_new {
@@ -446,7 +517,11 @@ async fn network(
     let sc = match SecureChannel::handshake(&client, true, &password).await {
         Ok(sc) => sc,
         Err(e) => {
-            set_status(&shared, &ctx, &format!("Authentication failed (wrong password?): {e}"));
+            set_status(
+                &shared,
+                &ctx,
+                &format!("Authentication failed (wrong password?): {e}"),
+            );
             return;
         }
     };
@@ -475,7 +550,9 @@ async fn network(
     });
 
     // Ask for the host's home directory listing to start.
-    let _ = out_tx.send(AppMessage::ListDir { path: String::new() });
+    let _ = out_tx.send(AppMessage::ListDir {
+        path: String::new(),
+    });
 
     set_status(&shared, &ctx, "Connected. Receiving screen ...");
     let mut frames = 0u64;
@@ -499,16 +576,27 @@ async fn network(
                         ctx.request_repaint();
                     }
                 }
-                Ok(AppMessage::HostInfo { screen_width, screen_height }) => {
+                Ok(AppMessage::HostInfo {
+                    screen_width,
+                    screen_height,
+                }) => {
                     set_status(
                         &shared,
                         &ctx,
                         &format!("Connected. Remote screen {screen_width}x{screen_height}. Mouse, keyboard & files active."),
                     );
                 }
-                Ok(AppMessage::DirListing { path, parent, entries }) => {
+                Ok(AppMessage::DirListing {
+                    path,
+                    parent,
+                    entries,
+                }) => {
                     if let Ok(mut s) = shared.lock() {
-                        s.listing = Some(Listing { path, parent, entries });
+                        s.listing = Some(Listing {
+                            path,
+                            parent,
+                            entries,
+                        });
                     }
                     ctx.request_repaint();
                 }
@@ -543,8 +631,15 @@ async fn network(
                     mark_download_error(&shared, &ctx, &message);
                     download = None;
                 }
-                Ok(AppMessage::Audio { sample_rate, channels, pcm }) => {
-                    let fmt = remotecraft_audio::AudioFormat { sample_rate, channels };
+                Ok(AppMessage::Audio {
+                    sample_rate,
+                    channels,
+                    pcm,
+                }) => {
+                    let fmt = remotecraft_audio::AudioFormat {
+                        sample_rate,
+                        channels,
+                    };
                     let _ = audio_tx.send((fmt, pcm));
                 }
                 Ok(_) => {}
@@ -587,7 +682,11 @@ fn begin_download(
             Some(file)
         }
         Err(e) => {
-            mark_download_error(shared, ctx, &format!("cannot create {}: {e}", dest.display()));
+            mark_download_error(
+                shared,
+                ctx,
+                &format!("cannot create {}: {e}", dest.display()),
+            );
             None
         }
     }

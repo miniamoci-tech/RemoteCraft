@@ -20,7 +20,9 @@ async fn correct_password_establishes_encrypted_channel() {
     let relay = start_relay().await;
 
     // Host registers and waits.
-    let host = RelayClient::connect(&relay, None).await.expect("host connect");
+    let host = RelayClient::connect(&relay, None)
+        .await
+        .expect("host connect");
     let host_id = host.id().to_string();
 
     let host_task = tokio::spawn(async move {
@@ -34,7 +36,9 @@ async fn correct_password_establishes_encrypted_channel() {
     });
 
     // Viewer connects.
-    let viewer = RelayClient::connect(&relay, None).await.expect("viewer connect");
+    let viewer = RelayClient::connect(&relay, None)
+        .await
+        .expect("viewer connect");
     viewer.connect_to(&host_id).await.expect("pair");
     let sc = SecureChannel::handshake(&viewer, true, "correct horse")
         .await
@@ -51,7 +55,9 @@ async fn correct_password_establishes_encrypted_channel() {
 async fn large_message_is_chunked_and_reassembled() {
     let relay = start_relay().await;
 
-    let host = RelayClient::connect(&relay, None).await.expect("host connect");
+    let host = RelayClient::connect(&relay, None)
+        .await
+        .expect("host connect");
     let host_id = host.id().to_string();
 
     // A payload several times larger than one Noise message.
@@ -60,16 +66,22 @@ async fn large_message_is_chunked_and_reassembled() {
 
     let host_task = tokio::spawn(async move {
         host.wait_for_peer().await.expect("peer");
-        let sc = SecureChannel::handshake(&host, false, "pw").await.expect("hs");
+        let sc = SecureChannel::handshake(&host, false, "pw")
+            .await
+            .expect("hs");
         let got = sc.recv_message(&host).await.expect("recv big");
         assert_eq!(got, expected, "reassembled message must match");
         // Echo back something small to release the viewer.
         sc.send_message(&host, b"ok").await.expect("ack");
     });
 
-    let viewer = RelayClient::connect(&relay, None).await.expect("viewer connect");
+    let viewer = RelayClient::connect(&relay, None)
+        .await
+        .expect("viewer connect");
     viewer.connect_to(&host_id).await.expect("pair");
-    let sc = SecureChannel::handshake(&viewer, true, "pw").await.expect("hs");
+    let sc = SecureChannel::handshake(&viewer, true, "pw")
+        .await
+        .expect("hs");
     sc.send_message(&viewer, &payload).await.expect("send big");
     let ack = sc.recv_message(&viewer).await.expect("ack");
     assert_eq!(ack, b"ok");
@@ -81,7 +93,9 @@ async fn large_message_is_chunked_and_reassembled() {
 async fn wrong_password_fails_handshake() {
     let relay = start_relay().await;
 
-    let host = RelayClient::connect(&relay, None).await.expect("host connect");
+    let host = RelayClient::connect(&relay, None)
+        .await
+        .expect("host connect");
     let host_id = host.id().to_string();
 
     let host_task = tokio::spawn(async move {
@@ -90,7 +104,9 @@ async fn wrong_password_fails_handshake() {
         SecureChannel::handshake(&host, false, "real-password").await
     });
 
-    let viewer = RelayClient::connect(&relay, None).await.expect("viewer connect");
+    let viewer = RelayClient::connect(&relay, None)
+        .await
+        .expect("viewer connect");
     viewer.connect_to(&host_id).await.expect("pair");
 
     // Viewer uses the wrong password. Bound with a timeout so a hang fails.
@@ -109,5 +125,8 @@ async fn wrong_password_fails_handshake() {
     assert!(host_result.is_err(), "host should reject wrong password");
     // The viewer either errors or times out; both mean no channel was formed.
     let viewer_ok = matches!(viewer_result, Ok(Ok(_)));
-    assert!(!viewer_ok, "viewer must not establish a channel with wrong password");
+    assert!(
+        !viewer_ok,
+        "viewer must not establish a channel with wrong password"
+    );
 }

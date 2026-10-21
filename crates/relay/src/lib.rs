@@ -173,9 +173,12 @@ impl Relay {
             };
             match msg {
                 ToRelay::Register { .. } => {
-                    self.send_to(id, FromRelay::Error {
-                        message: "already registered".to_string(),
-                    });
+                    self.send_to(
+                        id,
+                        FromRelay::Error {
+                            message: "already registered".to_string(),
+                        },
+                    );
                 }
                 ToRelay::Ping => {
                     self.send_to(id, FromRelay::Pong);
@@ -191,7 +194,11 @@ impl Relay {
     }
 
     /// Register a peer, assigning an ID. Honours `desired` when free.
-    fn register(&self, desired: Option<PeerId>, tx: mpsc::Sender<FromRelay>) -> anyhow::Result<PeerId> {
+    fn register(
+        &self,
+        desired: Option<PeerId>,
+        tx: mpsc::Sender<FromRelay>,
+    ) -> anyhow::Result<PeerId> {
         let mut peers = lock(&self.peers)?;
         let id = match desired {
             Some(d) if is_valid_id(&d) && !peers.contains_key(&d) => d,
@@ -253,29 +260,41 @@ impl Relay {
 
         if target == from {
             drop(peers);
-            self.send_to(from, FromRelay::SessionRefused {
-                target: target.clone(),
-                reason: "cannot connect to yourself".to_string(),
-            });
+            self.send_to(
+                from,
+                FromRelay::SessionRefused {
+                    target: target.clone(),
+                    reason: "cannot connect to yourself".to_string(),
+                },
+            );
             return;
         }
         if !peers.contains_key(target) {
             drop(peers);
-            self.send_to(from, FromRelay::SessionRefused {
-                target: target.clone(),
-                reason: "peer is offline or unknown".to_string(),
-            });
+            self.send_to(
+                from,
+                FromRelay::SessionRefused {
+                    target: target.clone(),
+                    reason: "peer is offline or unknown".to_string(),
+                },
+            );
             return;
         }
         // Reject if either side is already in a session.
         let from_busy = peers.get(from).map(|e| e.partner.is_some()).unwrap_or(true);
-        let target_busy = peers.get(target).map(|e| e.partner.is_some()).unwrap_or(true);
+        let target_busy = peers
+            .get(target)
+            .map(|e| e.partner.is_some())
+            .unwrap_or(true);
         if from_busy || target_busy {
             drop(peers);
-            self.send_to(from, FromRelay::SessionRefused {
-                target: target.clone(),
-                reason: "one of the peers is already in a session".to_string(),
-            });
+            self.send_to(
+                from,
+                FromRelay::SessionRefused {
+                    target: target.clone(),
+                    reason: "one of the peers is already in a session".to_string(),
+                },
+            );
             return;
         }
 
@@ -349,7 +368,8 @@ impl Relay {
 }
 
 fn lock<T>(m: &Mutex<T>) -> anyhow::Result<std::sync::MutexGuard<'_, T>> {
-    m.lock().map_err(|_| anyhow::anyhow!("relay state lock poisoned"))
+    m.lock()
+        .map_err(|_| anyhow::anyhow!("relay state lock poisoned"))
 }
 
 /// A valid public ID is exactly nine ASCII digits.

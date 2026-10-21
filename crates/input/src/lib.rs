@@ -20,7 +20,9 @@ use remotecraft_core::{InputEvent, KeyName, MouseButton};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InputError {
-    #[error("could not initialize input injection (on macOS, grant Accessibility permission): {0}")]
+    #[error(
+        "could not initialize input injection (on macOS, grant Accessibility permission): {0}"
+    )]
     Init(String),
     #[error("input injection failed: {0}")]
     Inject(String),
@@ -37,7 +39,8 @@ impl InputInjector {
     /// Create an injector. `screen_w`/`screen_h` are the host screen size used
     /// to turn normalized pointer coordinates into absolute pixels.
     pub fn new(screen_w: u32, screen_h: u32) -> Result<Self, InputError> {
-        let enigo = Enigo::new(&Settings::default()).map_err(|e| InputError::Init(e.to_string()))?;
+        let enigo =
+            Enigo::new(&Settings::default()).map_err(|e| InputError::Init(e.to_string()))?;
         Ok(Self {
             enigo,
             screen_w: screen_w.max(1) as i32,
@@ -55,7 +58,11 @@ impl InputInjector {
                     .map_err(|e| InputError::Inject(e.to_string()))
             }
             InputEvent::MouseButton { button, pressed } => {
-                let dir = if *pressed { Direction::Press } else { Direction::Release };
+                let dir = if *pressed {
+                    Direction::Press
+                } else {
+                    Direction::Release
+                };
                 self.enigo
                     .button(map_button(*button), dir)
                     .map_err(|e| InputError::Inject(e.to_string()))
@@ -78,9 +85,13 @@ impl InputInjector {
                 .enigo
                 .text(text)
                 .map_err(|e| InputError::Inject(e.to_string())),
-            InputEvent::KeyClick { key, ctrl, alt, shift, meta } => {
-                self.key_click(*key, *ctrl, *alt, *shift, *meta)
-            }
+            InputEvent::KeyClick {
+                key,
+                ctrl,
+                alt,
+                shift,
+                meta,
+            } => self.key_click(*key, *ctrl, *alt, *shift, *meta),
         }
     }
 

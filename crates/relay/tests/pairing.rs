@@ -40,7 +40,9 @@ async fn register(addr: std::net::SocketAddr) -> (TcpStream, String) {
 
 #[tokio::test]
 async fn two_peers_pair_and_relay_bytes() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
     let addr = listener.local_addr().expect("addr");
     tokio::spawn(Relay::new().serve(listener));
 
@@ -49,7 +51,13 @@ async fn two_peers_pair_and_relay_bytes() {
     let (mut viewer, _viewer_id) = register(addr).await;
 
     // Viewer connects to the host's ID.
-    send_msg(&mut viewer, &ToRelay::Connect { target: host_id.clone() }).await;
+    send_msg(
+        &mut viewer,
+        &ToRelay::Connect {
+            target: host_id.clone(),
+        },
+    )
+    .await;
 
     // Both sides should see SessionOpened with the same session number.
     let viewer_open = read_msg(&mut viewer).await;
@@ -80,12 +88,20 @@ async fn two_peers_pair_and_relay_bytes() {
 
 #[tokio::test]
 async fn connecting_to_unknown_id_is_refused() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
     let addr = listener.local_addr().expect("addr");
     tokio::spawn(Relay::new().serve(listener));
 
     let (mut viewer, _) = register(addr).await;
-    send_msg(&mut viewer, &ToRelay::Connect { target: "000000000".to_string() }).await;
+    send_msg(
+        &mut viewer,
+        &ToRelay::Connect {
+            target: "000000000".to_string(),
+        },
+    )
+    .await;
     match read_msg(&mut viewer).await {
         FromRelay::SessionRefused { target, .. } => assert_eq!(target, "000000000"),
         other => panic!("expected SessionRefused, got {other:?}"),
@@ -94,7 +110,9 @@ async fn connecting_to_unknown_id_is_refused() {
 
 #[tokio::test]
 async fn partner_is_told_when_peer_disconnects() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
     let addr = listener.local_addr().expect("addr");
     tokio::spawn(Relay::new().serve(listener));
 

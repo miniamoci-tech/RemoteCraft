@@ -27,7 +27,11 @@ pub struct SenderClosed;
 /// Build a [`AppMessage::DirListing`] for `path`. An empty path lists the
 /// host's home directory. Any error becomes [`AppMessage::FileError`].
 pub fn list_dir(path: &str) -> AppMessage {
-    let dir = if path.is_empty() { home_dir() } else { PathBuf::from(path) };
+    let dir = if path.is_empty() {
+        home_dir()
+    } else {
+        PathBuf::from(path)
+    };
 
     let read = match std::fs::read_dir(&dir) {
         Ok(r) => r,
@@ -46,7 +50,12 @@ pub fn list_dir(path: &str) -> AppMessage {
             Ok(m) => (m.is_dir(), m.len()),
             Err(_) => (false, 0),
         };
-        entries.push(DirEntry { name, path: full, is_dir, size });
+        entries.push(DirEntry {
+            name,
+            path: full,
+            is_dir,
+            size,
+        });
     }
     entries.sort_by(|a, b| {
         b.is_dir
@@ -76,7 +85,12 @@ pub async fn stream_file(path: &str, out: &mpsc::Sender<AppMessage>) -> Result<(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "download.bin".to_string());
 
-    out.send(AppMessage::FileStart { name, size: meta.len() }).await.map_err(|_| SenderClosed)?;
+    out.send(AppMessage::FileStart {
+        name,
+        size: meta.len(),
+    })
+    .await
+    .map_err(|_| SenderClosed)?;
 
     let mut file = match tokio::fs::File::open(path).await {
         Ok(f) => f,
@@ -88,19 +102,25 @@ pub async fn stream_file(path: &str, out: &mpsc::Sender<AppMessage>) -> Result<(
         match file.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                out.send(AppMessage::FileChunk { data: buf[..n].to_vec() })
-                    .await
-                    .map_err(|_| SenderClosed)?;
+                out.send(AppMessage::FileChunk {
+                    data: buf[..n].to_vec(),
+                })
+                .await
+                .map_err(|_| SenderClosed)?;
             }
             Err(e) => return emit_error(out, format!("read failed: {e}")).await,
         }
     }
 
-    out.send(AppMessage::FileEnd).await.map_err(|_| SenderClosed)
+    out.send(AppMessage::FileEnd)
+        .await
+        .map_err(|_| SenderClosed)
 }
 
 async fn emit_error(out: &mpsc::Sender<AppMessage>, message: String) -> Result<(), SenderClosed> {
-    out.send(AppMessage::FileError { message }).await.map_err(|_| SenderClosed)
+    out.send(AppMessage::FileError { message })
+        .await
+        .map_err(|_| SenderClosed)
 }
 
 fn home_dir() -> PathBuf {
@@ -121,7 +141,9 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), b"hello").expect("file");
 
         match list_dir(&dir.path().to_string_lossy()) {
-            AppMessage::DirListing { entries, parent, .. } => {
+            AppMessage::DirListing {
+                entries, parent, ..
+            } => {
                 assert!(parent.is_some());
                 assert_eq!(entries.len(), 2);
                 // Directory sorts before the file.
@@ -148,7 +170,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("audio.bin");
         // Larger than one chunk so we get multiple FileChunks.
-        let contents: Vec<u8> = (0..(FILE_CHUNK as u32 * 2 + 123)).map(|i| i as u8).collect();
+        let contents: Vec<u8> = (0..(FILE_CHUNK as u32 * 2 + 123))
+            .map(|i| i as u8)
+            .collect();
         std::fs::write(&path, &contents).expect("write");
 
         let (tx, mut rx) = mpsc::channel::<AppMessage>(8);

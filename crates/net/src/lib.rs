@@ -114,10 +114,13 @@ impl RelayClient {
         let (mut reader, mut writer) = stream.into_split();
 
         // Register and wait for the assigned ID.
-        write_frame(&mut writer, &ToRelay::Register {
-            protocol_version: PROTOCOL_VERSION,
-            desired_id,
-        })
+        write_frame(
+            &mut writer,
+            &ToRelay::Register {
+                protocol_version: PROTOCOL_VERSION,
+                desired_id,
+            },
+        )
         .await?;
         let id = loop {
             let frame = read_frame(&mut reader).await?;
@@ -199,7 +202,9 @@ impl RelayClient {
     /// Ask the relay to pair us with `target`, and wait for the result.
     pub async fn connect_to(&self, target: &str) -> Result<u64, NetError> {
         self.tx
-            .send(ToRelay::Connect { target: target.to_string() })
+            .send(ToRelay::Connect {
+                target: target.to_string(),
+            })
             .await
             .map_err(|_| NetError::PeerGone)?;
         match self.next_event().await? {
@@ -227,7 +232,10 @@ impl RelayClient {
 
     /// Send one opaque payload to the paired peer.
     pub async fn send(&self, bytes: Vec<u8>) -> Result<(), NetError> {
-        self.tx.send(ToRelay::Data(bytes)).await.map_err(|_| NetError::PeerGone)
+        self.tx
+            .send(ToRelay::Data(bytes))
+            .await
+            .map_err(|_| NetError::PeerGone)
     }
 
     /// Receive one opaque payload from the paired peer.
@@ -402,7 +410,9 @@ impl SecureChannel {
     pub async fn recv_message(&self, client: &RelayClient) -> Result<Vec<u8>, NetError> {
         let first = self.recv(client).await?;
         if first.len() < 4 {
-            return Err(NetError::Unexpected { expected: "message length prefix" });
+            return Err(NetError::Unexpected {
+                expected: "message length prefix",
+            });
         }
         let total = u32::from_be_bytes([first[0], first[1], first[2], first[3]]) as usize;
         if total > MAX_MESSAGE {

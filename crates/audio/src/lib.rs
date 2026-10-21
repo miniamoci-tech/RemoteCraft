@@ -61,7 +61,9 @@ impl AudioPlayer {
     /// Open the default output device for `format`.
     pub fn new(format: AudioFormat) -> Result<Self, AudioError> {
         let host = cpal::default_host();
-        let device = host.default_output_device().ok_or(AudioError::NoOutputDevice)?;
+        let device = host
+            .default_output_device()
+            .ok_or(AudioError::NoOutputDevice)?;
 
         let config = cpal::StreamConfig {
             channels: format.channels,
@@ -88,10 +90,17 @@ impl AudioPlayer {
                 err_fn,
                 None,
             )
-            .map_err(|e| AudioError::UnsupportedConfig(format.sample_rate, format.channels).wrap(e))?;
+            .map_err(|e| {
+                AudioError::UnsupportedConfig(format.sample_rate, format.channels).wrap(e)
+            })?;
 
-        stream.play().map_err(|e| AudioError::Playback(e.to_string()))?;
-        Ok(Self { buffer, _stream: stream })
+        stream
+            .play()
+            .map_err(|e| AudioError::Playback(e.to_string()))?;
+        Ok(Self {
+            buffer,
+            _stream: stream,
+        })
     }
 
     /// Queue PCM samples for playback, dropping the oldest if too far behind.
@@ -180,7 +189,13 @@ mod capture_impl {
             .get_periods()
             .map_err(|e| AudioError::Capture(format!("periods: {e}")))?;
         audio_client
-            .initialize_client(&format, min_time, &Direction::Capture, &ShareMode::Shared, true)
+            .initialize_client(
+                &format,
+                min_time,
+                &Direction::Capture,
+                &ShareMode::Shared,
+                true,
+            )
             .map_err(|e| AudioError::Capture(format!("initialize loopback: {e}")))?;
 
         let h_event = audio_client
@@ -193,7 +208,10 @@ mod capture_impl {
             .start_stream()
             .map_err(|e| AudioError::Capture(format!("start: {e}")))?;
 
-        let fmt = AudioFormat { sample_rate, channels };
+        let fmt = AudioFormat {
+            sample_rate,
+            channels,
+        };
         let mut queue: VecDeque<u8> = VecDeque::new();
 
         loop {

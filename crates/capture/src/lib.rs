@@ -108,7 +108,8 @@ fn encode_jpeg(width: u32, height: u32, raw: Vec<u8>, quality: u8) -> Result<Fra
     let rgb = DynamicImage::ImageRgba8(rgba).to_rgb8();
     let mut jpeg = Vec::new();
     let mut enc = JpegEncoder::new_with_quality(&mut jpeg, quality);
-    enc.encode_image(&rgb).map_err(|e| CaptureError::Encode(e.to_string()))?;
+    enc.encode_image(&rgb)
+        .map_err(|e| CaptureError::Encode(e.to_string()))?;
     Ok(Frame {
         width,
         height,

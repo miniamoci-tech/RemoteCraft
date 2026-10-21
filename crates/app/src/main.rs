@@ -48,5 +48,8 @@ fn main() -> anyhow::Result<()> {
 
 /// Read the value following `name` in the argument list.
 pub(crate) fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }

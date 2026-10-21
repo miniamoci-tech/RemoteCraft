@@ -88,7 +88,10 @@ pub enum FromRelay {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AppMessage {
     /// Sent by the host right after the secure channel opens.
-    HostInfo { screen_width: u32, screen_height: u32 },
+    HostInfo {
+        screen_width: u32,
+        screen_height: u32,
+    },
     /// One JPEG-encoded screen frame from the host.
     Frame {
         width: u32,
