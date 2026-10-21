@@ -1,0 +1,4 @@
+# Tests may use panicking shortcuts; product code may not (see AGENTS.md §4).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

@@ -1,0 +1,26 @@
+[Unit]
+Description=RemoteCraft relay server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Create a dedicated unprivileged user first:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin remotecraft
+User=remotecraft
+Group=remotecraft
+ExecStart=/usr/local/bin/remotecraft-relay --bind 0.0.0.0:21118
+Restart=on-failure
+RestartSec=2
+# Hardening: the relay needs nothing but the network.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target

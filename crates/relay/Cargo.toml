@@ -1,0 +1,27 @@
+[package]
+name = "remotecraft-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "remotecraft-relay"
+path = "src/main.rs"
+
+[lib]
+name = "remotecraft_relay"
+path = "src/lib.rs"
+
+[dependencies]
+remotecraft-core = { path = "../core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
