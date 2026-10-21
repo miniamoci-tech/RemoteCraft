@@ -11,9 +11,11 @@
 //! so aborts on macOS (AppKit tears down the first event loop's observers).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use remotecraft_net::random_password;
 
 use crate::host::{self, HostConfig, HostStatus, SharedHostStatus};
@@ -107,6 +109,35 @@ impl RootApp {
             }
         }
     }
+}
+
+/// Open the host status window directly (CLI `host-window`), without the
+/// launcher. Useful for an unattended/background host: it shows the ID and a
+/// live status, and can minimize to the system tray. One event loop.
+pub fn run_host_window(config: HostConfig) -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let handle = runtime.handle().clone();
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([480.0, 400.0])
+            .with_min_inner_size([420.0, 340.0]),
+        ..Default::default()
+    };
+
+    let result = eframe::run_native(
+        "RemoteCraft — sharing this screen",
+        options,
+        Box::new(move |cc| {
+            Ok(Box::new(HostWindow::start(
+                &handle,
+                cc.egui_ctx.clone(),
+                config,
+            )))
+        }),
+    );
+    drop(runtime);
+    result.map_err(|e| anyhow::anyhow!("gui error: {e}"))
 }
 
 impl eframe::App for RootApp {
@@ -356,6 +387,9 @@ struct HostWindow {
     relay: String,
     tray: Option<crate::tray::Tray>,
     tray_ready: bool,
+    /// The native window handle (HWND on Windows), shared with the tray thread
+    /// so it can restore the window while it is hidden. 0 until first known.
+    hwnd: Arc<AtomicIsize>,
     /// Set when the user really wants to exit (tray "Quit" or in-window button),
     /// so the close request is allowed through instead of hiding to the tray.
     quitting: bool,
@@ -375,17 +409,31 @@ impl HostWindow {
             relay: config.relay,
             tray: None,
             tray_ready: false,
+            hwnd: Arc::new(AtomicIsize::new(0)),
             quitting: false,
         }
     }
 }
 
+/// Read the native window handle value (HWND on Windows) from eframe's frame.
+fn window_handle_value(frame: &eframe::Frame) -> Option<isize> {
+    match frame.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    }
+}
+
 impl eframe::App for HostWindow {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Create the tray icon once, on the first frame (main thread).
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Keep the shared window handle current (cheap; only changes once).
+        if let Some(h) = window_handle_value(frame) {
+            self.hwnd.store(h, Ordering::SeqCst);
+        }
+        // Create the tray icon once, on the first frame (main thread), after
+        // the handle is known so the tray thread can restore the window.
         if !self.tray_ready {
             self.tray_ready = true;
-            self.tray = crate::tray::Tray::new(ctx.clone());
+            self.tray = crate::tray::Tray::new(ctx.clone(), self.hwnd.clone());
         }
         self.handle_tray(ctx);
 
@@ -502,8 +550,17 @@ impl HostWindow {
         let Some(tray) = &self.tray else {
             return;
         };
+        // The tray thread already restored the window via the OS; when this
+        // frame then runs, re-sync eframe's own visible flag and take focus.
+        if tray.take_show() {
+            crate::diag::log("ui: re-sync after show");
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
         if tray.quit_requested() {
             self.quitting = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
         // Closing the window hides it to the tray instead of quitting, unless
@@ -516,6 +573,7 @@ impl HostWindow {
 }
 
 fn hide_to_tray(ctx: &egui::Context) {
+    crate::diag::log("ui: hiding to tray (Visible(false))");
     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
 }

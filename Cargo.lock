@@ -4013,13 +4013,14 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "remotecraft"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "bincode",
  "eframe",
  "egui",
  "image",
+ "raw-window-handle",
  "remotecraft-audio",
  "remotecraft-capture",
  "remotecraft-core",
@@ -4030,11 +4031,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "remotecraft-audio"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "cpal",
  "thiserror 2.0.21",
@@ -4044,7 +4046,7 @@ dependencies = [
 
 [[package]]
 name = "remotecraft-capture"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "image",
  "remotecraft-core",
@@ -4058,7 +4060,7 @@ dependencies = [
 
 [[package]]
 name = "remotecraft-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "bincode",
  "serde",
@@ -4067,7 +4069,7 @@ dependencies = [
 
 [[package]]
 name = "remotecraft-files"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "remotecraft-core",
  "tempfile",
@@ -4076,7 +4078,7 @@ dependencies = [
 
 [[package]]
 name = "remotecraft-input"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "enigo",
  "remotecraft-core",
@@ -4086,7 +4088,7 @@ dependencies = [
 
 [[package]]
 name = "remotecraft-net"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "rand 0.8.8",
  "remotecraft-core",
@@ -4100,7 +4102,7 @@ dependencies = [
 
 [[package]]
 name = "remotecraft-probe"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "remotecraft-core",
@@ -4110,7 +4112,7 @@ dependencies = [
 
 [[package]]
 name = "remotecraft-relay"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "bincode",

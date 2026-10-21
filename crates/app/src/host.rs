@@ -122,8 +122,8 @@ impl Reporter {
     }
 }
 
-/// CLI entry: `remotecraft host --relay ... [--password ...] [...]`.
-pub fn run(args: &[String]) -> anyhow::Result<()> {
+/// Parse the host flags shared by `host` and `host-window` into a config.
+pub fn parse_config(args: &[String]) -> anyhow::Result<HostConfig> {
     let relay =
         flag(args, "--relay").ok_or_else(|| anyhow::anyhow!("--relay <host:port> is required"))?;
     let (password, attended) = match flag(args, "--password") {
@@ -145,7 +145,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         }
     }
 
-    let config = HostConfig {
+    Ok(HostConfig {
         relay,
         password,
         attended,
@@ -153,7 +153,12 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         quality,
         fps,
         audio,
-    };
+    })
+}
+
+/// CLI entry: `remotecraft host --relay ... [--password ...] [...]`.
+pub fn run(args: &[String]) -> anyhow::Result<()> {
+    let config = parse_config(args)?;
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move { host_loop(config, Reporter::Console).await });
     Ok(())

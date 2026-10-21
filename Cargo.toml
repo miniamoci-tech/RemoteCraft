@@ -13,13 +13,18 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/miniamoci-tech/RemoteCraft"
 
+# `unsafe` is denied everywhere and allowed only in one small, audited module
+# (crates/app/src/winos.rs) that calls the Win32 API to restore the host window
+# from the system tray — eframe cannot repaint a hidden window, so it cannot
+# bring it back on its own. "deny" (not "forbid") so that one module can opt in
+# with #![allow(unsafe_code)]; everywhere else unsafe is still a hard error.
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [workspace.dependencies]
 tokio = { version = "1.47.1", features = ["full"] }

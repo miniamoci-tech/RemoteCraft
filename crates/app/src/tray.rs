@@ -4,12 +4,12 @@
 //! Only Windows has a real implementation; elsewhere the window behaves
 //! normally and every method is a no-op.
 //!
-//! A background thread drains the tray's global menu-event channel. Because a
-//! hidden window stops running the UI update loop on its own, the thread acts
-//! on the egui `Context` directly — it sends the viewport commands to show the
-//! window and wakes the loop with `request_repaint` — instead of relying on
-//! the next frame to poll. "Quit" is signalled through a shared flag the
-//! window reads so it lets the close through instead of hiding again.
+//! A background thread drains the tray's global menu-event channel and records
+//! the request in shared flags, then wakes the UI with `request_repaint`
+//! (which runs a frame even while the window is hidden). The actual viewport
+//! commands — showing the window, closing it — are issued from the UI thread
+//! in `update`, because egui only reliably applies viewport commands from the
+//! thread that owns the event loop.
 
 #[cfg(windows)]
 pub use imp::Tray;
@@ -19,7 +19,7 @@ pub use noop::Tray;
 
 #[cfg(windows)]
 mod imp {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
     use std::sync::Arc;
 
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
@@ -29,14 +29,17 @@ mod imp {
         // Kept alive for as long as the window runs; dropping it removes the
         // icon from the notification area.
         _tray: TrayIcon,
+        show: Arc<AtomicBool>,
         quit: Arc<AtomicBool>,
     }
 
     impl Tray {
-        /// Create the tray icon. Must be called on the main thread. Returns
-        /// `None` if the icon could not be created (the window then just stays
-        /// in the taskbar).
-        pub fn new(ctx: egui::Context) -> Option<Self> {
+        /// Create the tray icon. Must be called on the main thread. `hwnd`
+        /// holds the window handle (filled in once the window exists); the
+        /// event thread uses it to restore the window directly, since eframe
+        /// cannot repaint — and therefore cannot show — a hidden window.
+        /// Returns `None` if the icon could not be created.
+        pub fn new(ctx: egui::Context, hwnd: Arc<AtomicIsize>) -> Option<Self> {
             let menu = Menu::new();
             let show = MenuItem::new("Show RemoteCraft", true, None);
             let quit = MenuItem::new("Quit (stop sharing)", true, None);
@@ -53,27 +56,40 @@ mod imp {
             }
             let tray = builder.build().ok()?;
 
+            let show_flag = Arc::new(AtomicBool::new(false));
             let quit_flag = Arc::new(AtomicBool::new(false));
+            let show_for_thread = show_flag.clone();
             let quit_for_thread = quit_flag.clone();
             std::thread::spawn(move || {
                 let rx = MenuEvent::receiver();
                 while let Ok(event) = rx.recv() {
                     if event.id == show_id {
-                        restore(&ctx);
+                        crate::diag::log("tray: show event -> restore_window");
+                        show_for_thread.store(true, Ordering::SeqCst);
                     } else if event.id == quit_id {
+                        crate::diag::log("tray: quit event received");
                         quit_for_thread.store(true, Ordering::SeqCst);
-                        // Make sure it's visible, then ask it to close.
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        ctx.request_repaint();
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    } else {
+                        continue;
                     }
+                    // Restore the window directly via the OS: eframe can't
+                    // repaint a hidden window, so this is what makes the UI
+                    // loop run again (and then re-sync eframe's own state).
+                    crate::winos::restore_window(hwnd.load(Ordering::SeqCst));
+                    ctx.request_repaint();
                 }
             });
 
             Some(Self {
                 _tray: tray,
+                show: show_flag,
                 quit: quit_flag,
             })
+        }
+
+        /// True once (then cleared) when the user picked "Show" from the menu.
+        pub fn take_show(&self) -> bool {
+            self.show.swap(false, Ordering::SeqCst)
         }
 
         /// True once the user picked "Quit" from the tray menu.
@@ -82,31 +98,89 @@ mod imp {
         }
     }
 
-    /// Bring the window back on screen from the tray.
-    fn restore(ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        ctx.request_repaint();
+    /// A 32x32 RGBA icon: a little blue monitor on a transparent background.
+    /// Returns `None` if the pixels are somehow rejected.
+    fn make_icon() -> Option<Icon> {
+        const S: i32 = 32;
+        let blue = [0x2f, 0x6f, 0xed];
+        let screen = [0xe8, 0xf1, 0xff];
+        let mut px = vec![0u8; (S * S * 4) as usize];
+
+        let mut put = |x: i32, y: i32, c: [u8; 3]| {
+            if (0..S).contains(&x) && (0..S).contains(&y) {
+                let i = ((y * S + x) * 4) as usize;
+                px[i] = c[0];
+                px[i + 1] = c[1];
+                px[i + 2] = c[2];
+                px[i + 3] = 0xff;
+            }
+        };
+
+        // Monitor body: a rounded rectangle.
+        let (x0, y0, x1, y1, r) = (4, 5, 27, 22, 4);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if rounded_contains(x, y, x0, y0, x1, y1, r) {
+                    put(x, y, blue);
+                }
+            }
+        }
+        // Screen inset.
+        for y in y0 + 3..=y1 - 3 {
+            for x in x0 + 3..=x1 - 3 {
+                put(x, y, screen);
+            }
+        }
+        // Neck and base of the stand.
+        for y in y1 + 1..=y1 + 3 {
+            for x in 14..=17 {
+                put(x, y, blue);
+            }
+        }
+        for x in 9..=22 {
+            put(x, y1 + 4, blue);
+            put(x, y1 + 5, blue);
+        }
+
+        Icon::from_rgba(px, S as u32, S as u32).ok()
     }
 
-    /// A small solid-colour icon (16x16 RGBA). Returns `None` if rejected.
-    fn make_icon() -> Option<Icon> {
-        let mut rgba = Vec::with_capacity(16 * 16 * 4);
-        for _ in 0..16 * 16 {
-            rgba.extend_from_slice(&[0x2f, 0x6f, 0xed, 0xff]);
-        }
-        Icon::from_rgba(rgba, 16, 16).ok()
+    /// Whether (x,y) is inside the rectangle with corners rounded by radius r.
+    fn rounded_contains(x: i32, y: i32, x0: i32, y0: i32, x1: i32, y1: i32, r: i32) -> bool {
+        // Corner centres, r pixels in from each corner.
+        let cx = if x < x0 + r {
+            x0 + r
+        } else if x > x1 - r {
+            x1 - r
+        } else {
+            x
+        };
+        let cy = if y < y0 + r {
+            y0 + r
+        } else if y > y1 - r {
+            y1 - r
+        } else {
+            y
+        };
+        let (dx, dy) = (x - cx, y - cy);
+        dx * dx + dy * dy <= r * r
     }
 }
 
 #[cfg(not(windows))]
 mod noop {
+    use std::sync::atomic::AtomicIsize;
+    use std::sync::Arc;
+
     pub struct Tray;
 
     impl Tray {
-        pub fn new(_ctx: egui::Context) -> Option<Self> {
+        pub fn new(_ctx: egui::Context, _hwnd: Arc<AtomicIsize>) -> Option<Self> {
             None
+        }
+
+        pub fn take_show(&self) -> bool {
+            false
         }
 
         pub fn quit_requested(&self) -> bool {

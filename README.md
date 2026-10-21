@@ -162,7 +162,12 @@ be used to attack it:
 
 - No `unwrap`/`expect`/`panic!` in product code (only in tests); errors are
   returned as `Result` and propagated.
-- `unsafe_code = "forbid"` across the workspace.
+- No `unsafe` across the workspace (`unsafe_code = "deny"`), with a single
+  audited exception: `crates/app/src/winos.rs`, a Windows-only module that calls
+  `ShowWindow`/`SetForegroundWindow` on the app's own window to restore it from
+  the system tray (eframe cannot repaint a hidden window, so it cannot show it
+  again by itself). That one module opts in with `#![allow(unsafe_code)]`;
+  everywhere else `unsafe` is a hard error.
 - Every length read from the wire is bounded (`MAX_FRAME_LEN`) before any
   allocation, so a remote peer cannot force a huge buffer.
 - Lock poisoning is handled; one bad connection never takes the relay down.

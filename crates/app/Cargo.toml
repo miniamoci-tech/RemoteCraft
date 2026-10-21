@@ -27,9 +27,14 @@ bincode = { workspace = true }
 image = { workspace = true }
 eframe = "0.29.1"
 egui = "0.29.1"
+# Read the native window handle (HWND on Windows) from eframe's Frame; same
+# major version eframe exposes.
+raw-window-handle = "0.6"
 
 # Windows-only: system-tray icon so the host window can minimize/close to the
-# notification area instead of the taskbar. Kept off other platforms so the
-# macOS build pulls no extra system dependencies.
+# notification area instead of the taskbar, plus the Win32 calls to bring the
+# window back (eframe can't repaint a hidden window). Kept off other platforms
+# so the macOS build pulls no extra system dependencies.
 [target.'cfg(windows)'.dependencies]
 tray-icon = "0.19"
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }

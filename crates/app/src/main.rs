@@ -29,10 +29,12 @@
     clippy::unreachable
 )]
 
+mod diag;
 mod host;
 mod launcher;
 mod tray;
 mod viewer;
+mod winos;
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -47,6 +49,7 @@ fn main() -> anyhow::Result<()> {
 
     match mode {
         Some("host") => host::run(&args),
+        Some("host-window") => launcher::run_host_window(host::parse_config(&args)?),
         Some("view") => viewer::run(&args),
         // No arguments: open the graphical launcher.
         None => launcher::run(),
