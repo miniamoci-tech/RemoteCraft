@@ -87,7 +87,9 @@ jobs:
 
       - name: Assemble RemoteCraft.app (double-clickable launcher)
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          # A tag (v0.1.9) gives the version; a manual run from a branch has no
+          # version, and a branch name with "/" would also break the sed below.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0"; fi
           [ -z "$VERSION" ] && VERSION="0.0.0"
           APP="dist/dmg/RemoteCraft.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -96,7 +98,7 @@ jobs:
           cp dist/dmg/remotecraft "$APP/Contents/MacOS/remotecraft"
           cp dist/dmg/remotecraft-relay "$APP/Contents/MacOS/remotecraft-relay"
           chmod +x "$APP/Contents/MacOS/remotecraft" "$APP/Contents/MacOS/remotecraft-relay"
-          sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          sed "s|__VERSION__|$VERSION|g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
           echo "APPL????" > "$APP/Contents/PkgInfo"
 
       - name: Build .dmg
