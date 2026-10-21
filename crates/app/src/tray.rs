@@ -2,18 +2,14 @@
 //! area instead of the taskbar while it keeps sharing.
 //!
 //! Only Windows has a real implementation; elsewhere the window behaves
-//! normally and every method is a no-op. A background thread drains the
-//! tray's global event channel and wakes the egui event loop with
-//! `request_repaint`, so a click on the tray menu is handled even while the
-//! window is hidden (a hidden window stops repainting on its own).
-
-/// What the user asked for via the tray.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum TrayAction {
-    None,
-    Show,
-    Quit,
-}
+//! normally and every method is a no-op.
+//!
+//! A background thread drains the tray's global menu-event channel. Because a
+//! hidden window stops running the UI update loop on its own, the thread acts
+//! on the egui `Context` directly — it sends the viewport commands to show the
+//! window and wakes the loop with `request_repaint` — instead of relying on
+//! the next frame to poll. "Quit" is signalled through a shared flag the
+//! window reads so it lets the close through instead of hiding again.
 
 #[cfg(windows)]
 pub use imp::Tray;
@@ -23,18 +19,17 @@ pub use noop::Tray;
 
 #[cfg(windows)]
 mod imp {
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
-    use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
+    use tray_icon::menu::{Menu, MenuEvent, MenuItem};
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
-
-    use super::TrayAction;
 
     pub struct Tray {
         // Kept alive for as long as the window runs; dropping it removes the
         // icon from the notification area.
         _tray: TrayIcon,
-        pending: Arc<Mutex<Option<TrayAction>>>,
+        quit: Arc<AtomicBool>,
     }
 
     impl Tray {
@@ -58,49 +53,41 @@ mod imp {
             }
             let tray = builder.build().ok()?;
 
-            let pending: Arc<Mutex<Option<TrayAction>>> = Arc::new(Mutex::new(None));
-            spawn_pump(ctx, show_id, quit_id, pending.clone());
+            let quit_flag = Arc::new(AtomicBool::new(false));
+            let quit_for_thread = quit_flag.clone();
+            std::thread::spawn(move || {
+                let rx = MenuEvent::receiver();
+                while let Ok(event) = rx.recv() {
+                    if event.id == show_id {
+                        restore(&ctx);
+                    } else if event.id == quit_id {
+                        quit_for_thread.store(true, Ordering::SeqCst);
+                        // Make sure it's visible, then ask it to close.
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.request_repaint();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            });
 
             Some(Self {
                 _tray: tray,
-                pending,
+                quit: quit_flag,
             })
         }
 
-        /// Take the latest pending tray action (consumes it).
-        pub fn poll(&self) -> TrayAction {
-            self.pending
-                .lock()
-                .ok()
-                .and_then(|mut p| p.take())
-                .unwrap_or(TrayAction::None)
+        /// True once the user picked "Quit" from the tray menu.
+        pub fn quit_requested(&self) -> bool {
+            self.quit.load(Ordering::SeqCst)
         }
     }
 
-    /// Drain the global menu-event channel on a background thread and wake the
-    /// UI. A single consumer avoids racing the UI thread for the same events.
-    fn spawn_pump(
-        ctx: egui::Context,
-        show_id: MenuId,
-        quit_id: MenuId,
-        pending: Arc<Mutex<Option<TrayAction>>>,
-    ) {
-        std::thread::spawn(move || {
-            let rx = MenuEvent::receiver();
-            while let Ok(event) = rx.recv() {
-                let action = if event.id == quit_id {
-                    TrayAction::Quit
-                } else if event.id == show_id {
-                    TrayAction::Show
-                } else {
-                    continue;
-                };
-                if let Ok(mut p) = pending.lock() {
-                    *p = Some(action);
-                }
-                ctx.request_repaint();
-            }
-        });
+    /// Bring the window back on screen from the tray.
+    fn restore(ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
     }
 
     /// A small solid-colour icon (16x16 RGBA). Returns `None` if rejected.
@@ -115,8 +102,6 @@ mod imp {
 
 #[cfg(not(windows))]
 mod noop {
-    use super::TrayAction;
-
     pub struct Tray;
 
     impl Tray {
@@ -124,8 +109,8 @@ mod noop {
             None
         }
 
-        pub fn poll(&self) -> TrayAction {
-            TrayAction::None
+        pub fn quit_requested(&self) -> bool {
+            false
         }
     }
 }

@@ -15,6 +15,11 @@
 //! graphical launcher so a non-technical user can pick a role and fill in the
 //! fields without the command line.
 
+// On Windows, build as a GUI ("windows") subsystem app so launching it (e.g.
+// from the desktop icon) does not pop up a black console window behind the
+// launcher. The CLI subcommands still work; their text output just isn't shown
+// in a console on Windows (the GUI windows carry the same information).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,

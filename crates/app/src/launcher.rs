@@ -478,8 +478,9 @@ impl eframe::App for HostWindow {
             });
             ui.label(
                 egui::RichText::new(if self.tray.is_some() {
-                    "Minimizing or closing keeps RemoteCraft running in the tray \
-                     (next to the clock). Use Quit to stop sharing."
+                    "Closing the window (or \"Minimize to tray\") keeps RemoteCraft \
+                     running as an icon next to the clock — click it and choose \
+                     \"Show RemoteCraft\" to reopen. Use Quit to stop sharing."
                 } else {
                     "Close this window to stop sharing."
                 })
@@ -493,21 +494,16 @@ impl eframe::App for HostWindow {
 }
 
 impl HostWindow {
-    /// Act on tray-menu clicks and on close/minimize while a tray icon exists.
+    /// Act on the tray while a tray icon exists. Showing the window from the
+    /// tray is done by the tray's own thread (so it works while hidden); here
+    /// we only need to honour a "Quit" request and turn the window's close
+    /// button into "hide to tray".
     fn handle_tray(&mut self, ctx: &egui::Context) {
-        if self.tray.is_none() {
+        let Some(tray) = &self.tray else {
             return;
-        }
-
-        if let Some(tray) = &self.tray {
-            match tray.poll() {
-                crate::tray::TrayAction::Quit => {
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                crate::tray::TrayAction::Show => show_from_tray(ctx),
-                crate::tray::TrayAction::None => {}
-            }
+        };
+        if tray.quit_requested() {
+            self.quitting = true;
         }
 
         // Closing the window hides it to the tray instead of quitting, unless
@@ -516,23 +512,12 @@ impl HostWindow {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             hide_to_tray(ctx);
         }
-
-        // Minimizing also tucks the window into the tray (off the taskbar).
-        if ctx.input(|i| i.viewport().minimized == Some(true)) {
-            hide_to_tray(ctx);
-        }
     }
 }
 
 fn hide_to_tray(ctx: &egui::Context) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-}
-
-fn show_from_tray(ctx: &egui::Context) {
-    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
 }
 
 fn selectable_mono(ui: &mut egui::Ui, text: &str) {
