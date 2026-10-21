@@ -5,6 +5,7 @@ members = [
     "crates/relay",
     "crates/net",
     "crates/capture",
+    "crates/input",
     "crates/app",
     "crates/probe",
 ]
@@ -31,3 +32,4 @@ sha2 = "0.10.9"
 rand = "0.8.5"
 xcap = "0.0.14"
 image = { version = "0.25.5", default-features = false, features = ["jpeg"] }
+enigo = "0.2.1"

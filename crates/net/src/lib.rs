@@ -26,6 +26,9 @@
     clippy::unreachable
 )]
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use remotecraft_core::{
     checked_frame_len, decode_frame, encode_frame, FromRelay, PeerId, ToRelay, PROTOCOL_VERSION,
 };
@@ -87,11 +90,17 @@ enum Event {
 }
 
 /// A client connection to the relay.
+///
+/// All methods take `&self` so the client can be shared (behind an `Arc`)
+/// between a task that sends and one that receives — the host streams screen
+/// frames while receiving input events at the same time. The inbound channels
+/// are each behind a `Mutex` because an `mpsc::Receiver` needs `&mut` to poll;
+/// only one task receives from each at a time.
 pub struct RelayClient {
     id: PeerId,
     tx: mpsc::Sender<ToRelay>,
-    events: mpsc::Receiver<Event>,
-    data: mpsc::Receiver<Vec<u8>>,
+    events: tokio::sync::Mutex<mpsc::Receiver<Event>>,
+    data: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
     _writer: JoinHandle<()>,
     _reader: JoinHandle<()>,
 }
@@ -175,8 +184,8 @@ impl RelayClient {
         Ok(Self {
             id,
             tx: out_tx,
-            events: ev_rx,
-            data: data_rx,
+            events: tokio::sync::Mutex::new(ev_rx),
+            data: tokio::sync::Mutex::new(data_rx),
             _writer: writer_task,
             _reader: reader_task,
         })
@@ -188,7 +197,7 @@ impl RelayClient {
     }
 
     /// Ask the relay to pair us with `target`, and wait for the result.
-    pub async fn connect_to(&mut self, target: &str) -> Result<u64, NetError> {
+    pub async fn connect_to(&self, target: &str) -> Result<u64, NetError> {
         self.tx
             .send(ToRelay::Connect { target: target.to_string() })
             .await
@@ -202,7 +211,7 @@ impl RelayClient {
     }
 
     /// Wait for an incoming peer (host side).
-    pub async fn wait_for_peer(&mut self) -> Result<(u64, PeerId), NetError> {
+    pub async fn wait_for_peer(&self) -> Result<(u64, PeerId), NetError> {
         match self.next_event().await? {
             Event::PeerConnected { session, peer } => Ok((session, peer)),
             Event::RelayError(m) => Err(NetError::Relay(m)),
@@ -211,8 +220,9 @@ impl RelayClient {
         }
     }
 
-    async fn next_event(&mut self) -> Result<Event, NetError> {
-        self.events.recv().await.ok_or(NetError::PeerGone)
+    async fn next_event(&self) -> Result<Event, NetError> {
+        let mut events = self.events.lock().await;
+        events.recv().await.ok_or(NetError::PeerGone)
     }
 
     /// Send one opaque payload to the paired peer.
@@ -221,8 +231,9 @@ impl RelayClient {
     }
 
     /// Receive one opaque payload from the paired peer.
-    pub async fn recv(&mut self) -> Result<Vec<u8>, NetError> {
-        self.data.recv().await.ok_or(NetError::PeerGone)
+    pub async fn recv(&self) -> Result<Vec<u8>, NetError> {
+        let mut data = self.data.lock().await;
+        data.recv().await.ok_or(NetError::PeerGone)
     }
 }
 
@@ -253,17 +264,26 @@ pub fn random_password(len: usize) -> String {
         .collect()
 }
 
-/// An established end-to-end encrypted channel. Holds the Noise transport
-/// state; the caller moves ciphertext over a [`RelayClient`].
+/// An established end-to-end encrypted channel.
+///
+/// Uses Noise in *stateless* transport mode: the cipher state is immutable and
+/// each message carries an explicit nonce, which we draw from two independent
+/// monotonic counters (one per direction). That lets the channel be cloned and
+/// used from two tasks at once — one encrypting outbound frames, one decrypting
+/// inbound input — without a lock on the cipher. Each direction is a single
+/// ordered stream, so its nonces stay in lockstep with the peer's.
+#[derive(Clone)]
 pub struct SecureChannel {
-    noise: snow::TransportState,
+    transport: Arc<snow::StatelessTransportState>,
+    send_nonce: Arc<AtomicU64>,
+    recv_nonce: Arc<AtomicU64>,
 }
 
 impl SecureChannel {
     /// Run the Noise handshake over `client` and return the secure channel.
     /// The viewer is the `initiator`; the host is the responder.
     pub async fn handshake(
-        client: &mut RelayClient,
+        client: &RelayClient,
         initiator: bool,
         password: &str,
     ) -> Result<Self, NetError> {
@@ -284,66 +304,68 @@ impl SecureChannel {
         let mut payload = vec![0u8; 65535];
 
         if initiator {
-            // -> e, psk
             let len = hs
                 .write_message(&[], &mut buf)
                 .map_err(|e| NetError::Handshake(format!("write msg1: {e:?}")))?;
             client.send(buf[..len].to_vec()).await?;
-            // <- e, ee, psk
             let incoming = client.recv().await?;
             hs.read_message(&incoming, &mut payload)
                 .map_err(|e| NetError::Handshake(format!("read msg2: {e:?}")))?;
         } else {
-            // <- e, psk
             let incoming = client.recv().await?;
             hs.read_message(&incoming, &mut payload)
                 .map_err(|e| NetError::Handshake(format!("read msg1: {e:?}")))?;
-            // -> e, ee, psk
             let len = hs
                 .write_message(&[], &mut buf)
                 .map_err(|e| NetError::Handshake(format!("write msg2: {e:?}")))?;
             client.send(buf[..len].to_vec()).await?;
         }
 
-        let noise = hs
-            .into_transport_mode()
+        let transport = hs
+            .into_stateless_transport_mode()
             .map_err(|e| NetError::Handshake(format!("transport: {e:?}")))?;
-        Ok(Self { noise })
+        Ok(Self {
+            transport: Arc::new(transport),
+            send_nonce: Arc::new(AtomicU64::new(0)),
+            recv_nonce: Arc::new(AtomicU64::new(0)),
+        })
     }
 
     /// Encrypt one payload into a frame to send over the relay.
-    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NetError> {
+    pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, NetError> {
         if plaintext.len() > MAX_PLAINTEXT {
             return Err(NetError::TooLarge(plaintext.len()));
         }
+        let nonce = self.send_nonce.fetch_add(1, Ordering::Relaxed);
         let mut out = vec![0u8; plaintext.len() + 16];
         let len = self
-            .noise
-            .write_message(plaintext, &mut out)
+            .transport
+            .write_message(nonce, plaintext, &mut out)
             .map_err(|e| NetError::Handshake(format!("encrypt: {e:?}")))?;
         out.truncate(len);
         Ok(out)
     }
 
     /// Decrypt one frame received from the relay.
-    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, NetError> {
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, NetError> {
+        let nonce = self.recv_nonce.fetch_add(1, Ordering::Relaxed);
         let mut out = vec![0u8; ciphertext.len().max(16)];
         let len = self
-            .noise
-            .read_message(ciphertext, &mut out)
+            .transport
+            .read_message(nonce, ciphertext, &mut out)
             .map_err(|e| NetError::Handshake(format!("decrypt: {e:?}")))?;
         out.truncate(len);
         Ok(out)
     }
 
     /// Encrypt and send a payload in one step.
-    pub async fn send(&mut self, client: &RelayClient, plaintext: &[u8]) -> Result<(), NetError> {
+    pub async fn send(&self, client: &RelayClient, plaintext: &[u8]) -> Result<(), NetError> {
         let ct = self.encrypt(plaintext)?;
         client.send(ct).await
     }
 
     /// Receive and decrypt a payload in one step.
-    pub async fn recv(&mut self, client: &mut RelayClient) -> Result<Vec<u8>, NetError> {
+    pub async fn recv(&self, client: &RelayClient) -> Result<Vec<u8>, NetError> {
         let ct = client.recv().await?;
         self.decrypt(&ct)
     }
@@ -353,22 +375,15 @@ impl SecureChannel {
     /// total length; the receiver reassembles with [`recv_message`].
     ///
     /// [`recv_message`]: Self::recv_message
-    pub async fn send_message(
-        &mut self,
-        client: &RelayClient,
-        data: &[u8],
-    ) -> Result<(), NetError> {
+    pub async fn send_message(&self, client: &RelayClient, data: &[u8]) -> Result<(), NetError> {
         if data.len() > MAX_MESSAGE {
             return Err(NetError::TooLarge(data.len()));
         }
         // data.len() <= MAX_MESSAGE which fits in u32.
         let total = (data.len() as u32).to_be_bytes();
-        let mut first = Vec::with_capacity(4 + data.len().min(MAX_PLAINTEXT - 4));
-        first.extend_from_slice(&total);
-
-        // Fill the first chunk's remaining room, then send the rest in full
-        // MAX_PLAINTEXT chunks.
         let head = data.len().min(MAX_PLAINTEXT - 4);
+        let mut first = Vec::with_capacity(4 + head);
+        first.extend_from_slice(&total);
         first.extend_from_slice(&data[..head]);
         self.send(client, &first).await?;
 
@@ -384,7 +399,7 @@ impl SecureChannel {
     /// Receive a logical message sent with [`send_message`].
     ///
     /// [`send_message`]: Self::send_message
-    pub async fn recv_message(&mut self, client: &mut RelayClient) -> Result<Vec<u8>, NetError> {
+    pub async fn recv_message(&self, client: &RelayClient) -> Result<Vec<u8>, NetError> {
         let first = self.recv(client).await?;
         if first.len() < 4 {
             return Err(NetError::Unexpected { expected: "message length prefix" });
@@ -398,7 +413,6 @@ impl SecureChannel {
         while acc.len() < total {
             let chunk = self.recv(client).await?;
             acc.extend_from_slice(&chunk);
-            // Guard against a peer that overshoots the declared length.
             if acc.len() > total {
                 acc.truncate(total);
                 break;

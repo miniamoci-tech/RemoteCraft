@@ -70,7 +70,7 @@ async fn run_host(relay: &str, password: Option<String>) -> anyhow::Result<()> {
     };
 
     println!("Connecting to relay {relay} ...");
-    let mut client = RelayClient::connect(relay, None).await?;
+    let client = RelayClient::connect(relay, None).await?;
     let id = client.id().to_string();
 
     println!("\n  Relay OK. This machine's ID is:  {id}");
@@ -93,7 +93,7 @@ async fn run_host(relay: &str, password: Option<String>) -> anyhow::Result<()> {
         };
         println!("[+] Peer {peer} connected (session {session}). Authenticating ...");
 
-        let mut sc = match SecureChannel::handshake(&mut client, false, &password).await {
+        let sc = match SecureChannel::handshake(&client, false, &password).await {
             Ok(sc) => sc,
             Err(e) => {
                 println!("[x] Authentication failed: {e}");
@@ -103,7 +103,7 @@ async fn run_host(relay: &str, password: Option<String>) -> anyhow::Result<()> {
         };
         println!("[+] Authenticated and encrypted. Waiting for a message ...");
 
-        match sc.recv(&mut client).await {
+        match sc.recv(&client).await {
             Ok(msg) => {
                 let text = String::from_utf8_lossy(&msg);
                 println!("[recv] {text}");
@@ -121,14 +121,14 @@ async fn run_host(relay: &str, password: Option<String>) -> anyhow::Result<()> {
 
 async fn run_connect(relay: &str, target: &str, password: &str) -> anyhow::Result<()> {
     println!("Connecting to relay {relay} ...");
-    let mut client = RelayClient::connect(relay, None).await?;
+    let client = RelayClient::connect(relay, None).await?;
     let id = client.id().to_string();
     println!("Relay OK. My ID is {id}. Connecting to {target} ...");
 
     client.connect_to(target).await?;
     println!("[+] Paired. Authenticating with password ...");
 
-    let mut sc = SecureChannel::handshake(&mut client, true, password).await?;
+    let sc = SecureChannel::handshake(&client, true, password).await?;
     println!("[+] Authenticated and encrypted.");
 
     let now = SystemTime::now()
@@ -139,7 +139,7 @@ async fn run_connect(relay: &str, target: &str, password: &str) -> anyhow::Resul
     println!("[send] {msg}");
     sc.send(&client, msg.as_bytes()).await?;
 
-    let reply = sc.recv(&mut client).await?;
+    let reply = sc.recv(&client).await?;
     let text = String::from_utf8_lossy(&reply);
     println!("[recv echo] {text}");
     println!("\n  Encrypted round-trip through the relay succeeded. Auth + crypto work.\n");

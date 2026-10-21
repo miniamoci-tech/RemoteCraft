@@ -89,7 +89,10 @@ error LNK1104, point the build output at a plain path:
   authentication and E2E encryption of the peer channel. Wrong password fails
   the handshake; the relay only ever sees ciphertext.
 - [ ] M2 — Screen capture + frame streaming; viewer window (GUI app).
-- [ ] M3 — Mouse + keyboard input injection on the host.
+- [x] M3 — Mouse + keyboard control: the viewer forwards pointer moves,
+  clicks, scroll, typed text and shortcuts; the host injects them (enigo).
+  Coordinates are normalized, so it is resolution-independent. On macOS the
+  host needs the "Accessibility" permission.
 - [ ] M5 — Remote audio: capture host system playback, stream to viewer.
 - [ ] M6 — Packaging: signed-where-possible Windows setup `.exe` and macOS
   `.dmg`, built in CI.

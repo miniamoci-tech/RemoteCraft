@@ -1,16 +1,19 @@
-//! Host role: capture this screen and stream it to an authenticated viewer.
+//! Host role: capture this screen, stream it to an authenticated viewer, and
+//! apply the viewer's mouse/keyboard input.
 //!
-//! `xcap::Monitor` is not `Send`, so the capturer is created and used only on
-//! one dedicated OS thread. That thread pushes finished (Send) JPEG frames to
-//! the async side over a bounded channel; when the viewer is slow, frames are
-//! dropped rather than queued, so latency never grows without bound.
+//! Three threads/tasks cooperate per session:
+//! - a capture thread owns the (!Send) screen capturer and pushes JPEG frames;
+//! - an injection thread owns the (!Send) input injector and applies events;
+//! - async tasks move frames out and input in over one shared, cloneable
+//!   [`SecureChannel`] / [`RelayClient`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use remotecraft_capture::{Capturer, Frame};
-use remotecraft_core::{to_bytes, AppMessage};
+use remotecraft_core::{decode_frame, to_bytes, AppMessage, InputEvent};
+use remotecraft_input::InputInjector;
 use remotecraft_net::{random_password, RelayClient, SecureChannel};
 use tokio::sync::mpsc;
 
@@ -43,16 +46,13 @@ async fn host_loop(
     quality: u8,
     fps: u32,
 ) -> anyhow::Result<()> {
-    // Only capture while a viewer is connected.
     let active = Arc::new(AtomicBool::new(false));
     let (frame_tx, mut frame_rx) = mpsc::channel::<CaptureMsg>(2);
 
-    // Dedicated capture thread owns the (non-Send) capturer.
     let interval = Duration::from_millis(1000 / fps as u64);
     let active_thread = active.clone();
     std::thread::spawn(move || capture_thread(quality, interval, active_thread, frame_tx));
 
-    // Wait for the capture thread's readiness (or failure).
     let (width, height) = match frame_rx.recv().await {
         Some(CaptureMsg::Ready { width, height }) => (width, height),
         Some(CaptureMsg::Error(e)) => anyhow::bail!("screen capture unavailable: {e}"),
@@ -60,7 +60,7 @@ async fn host_loop(
     };
     println!("Screen: {width}x{height}");
 
-    let mut client = RelayClient::connect(relay, None).await?;
+    let client = Arc::new(RelayClient::connect(relay, None).await?);
     let id = client.id().to_string();
 
     println!("\n  RemoteCraft host ready.");
@@ -84,40 +84,60 @@ async fn host_loop(
         };
         println!("[+] Viewer {peer} connected (session {session}). Authenticating ...");
 
-        let mut sc = match SecureChannel::handshake(&mut client, false, password).await {
+        let sc = match SecureChannel::handshake(&client, false, password).await {
             Ok(sc) => sc,
             Err(e) => {
                 println!("[x] Authentication failed: {e}. Waiting again ...");
                 continue;
             }
         };
-        println!("[+] Authenticated. Streaming at {fps} fps, quality {quality} ...");
+        println!("[+] Authenticated. Streaming at {fps} fps, quality {quality}; input enabled.");
 
-        // Announce screen size, then stream frames until the viewer leaves.
-        let info = AppMessage::HostInfo {
-            screen_width: width,
-            screen_height: height,
-        };
-        let ok = match to_bytes(&info) {
-            Ok(bytes) => sc.send_message(&client, &bytes).await.is_ok(),
-            Err(_) => false,
-        };
-        if !ok {
-            println!("[-] viewer gone before first frame. Waiting again ...");
-            continue;
-        }
-
-        active.store(true, Ordering::Relaxed);
-        let reason = stream_session(&mut client, &mut sc, &mut frame_rx).await;
+        let reason = run_session(&client, &sc, &mut frame_rx, &active, width, height).await;
         active.store(false, Ordering::Relaxed);
         println!("[-] Session ended: {reason}. Waiting for a new viewer ...");
     }
 }
 
-/// Stream frames to the viewer until an error. Returns a human reason.
-async fn stream_session(
-    client: &mut RelayClient,
-    sc: &mut SecureChannel,
+/// Run one viewer session: send HostInfo, then stream frames and apply input
+/// concurrently until either direction fails.
+async fn run_session(
+    client: &Arc<RelayClient>,
+    sc: &SecureChannel,
+    frame_rx: &mut mpsc::Receiver<CaptureMsg>,
+    active: &Arc<AtomicBool>,
+    width: u32,
+    height: u32,
+) -> String {
+    let info = AppMessage::HostInfo {
+        screen_width: width,
+        screen_height: height,
+    };
+    match to_bytes(&info) {
+        Ok(bytes) => {
+            if let Err(e) = sc.send_message(client, &bytes).await {
+                return format!("viewer gone before first frame: {e}");
+            }
+        }
+        Err(e) => return format!("encode HostInfo: {e}"),
+    }
+
+    // Input injection thread.
+    let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
+    std::thread::spawn(move || injection_thread(width, height, input_rx));
+
+    active.store(true, Ordering::Relaxed);
+
+    // Frames out and input in run concurrently; first to finish ends the session.
+    tokio::select! {
+        r = stream_frames(client, sc, frame_rx) => r,
+        r = recv_input(client, sc, &input_tx) => r,
+    }
+}
+
+async fn stream_frames(
+    client: &Arc<RelayClient>,
+    sc: &SecureChannel,
     frame_rx: &mut mpsc::Receiver<CaptureMsg>,
 ) -> String {
     loop {
@@ -137,7 +157,7 @@ async fn stream_session(
         };
         let bytes = match to_bytes(&app) {
             Ok(b) => b,
-            Err(e) => return format!("encode error: {e}"),
+            Err(e) => return format!("encode frame: {e}"),
         };
         if let Err(e) = sc.send_message(client, &bytes).await {
             return format!("{e}");
@@ -145,7 +165,44 @@ async fn stream_session(
     }
 }
 
-/// Runs on its own thread; owns the capturer.
+async fn recv_input(
+    client: &Arc<RelayClient>,
+    sc: &SecureChannel,
+    input_tx: &mpsc::Sender<InputEvent>,
+) -> String {
+    loop {
+        let bytes = match sc.recv_message(client).await {
+            Ok(b) => b,
+            Err(e) => return format!("{e}"),
+        };
+        match decode_frame::<AppMessage>(&bytes) {
+            Ok(AppMessage::Input(ev)) => {
+                // Drop if the injector is backed up rather than stalling recv.
+                let _ = input_tx.try_send(ev);
+            }
+            Ok(_) => {} // viewer shouldn't send other messages
+            Err(_) => {}
+        }
+    }
+}
+
+/// Owns the (!Send) input injector; applies events until the channel closes.
+fn injection_thread(width: u32, height: u32, mut rx: mpsc::Receiver<InputEvent>) {
+    let mut injector = match InputInjector::new(width, height) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[input] disabled: {e}");
+            return;
+        }
+    };
+    while let Some(ev) = rx.blocking_recv() {
+        if let Err(e) = injector.apply(&ev) {
+            tracing::warn!(error = %e, "input injection failed");
+        }
+    }
+}
+
+/// Owns the (!Send) screen capturer; captures while `active`.
 fn capture_thread(
     quality: u8,
     interval: Duration,
@@ -176,20 +233,16 @@ fn capture_thread(
         }
         let start = std::time::Instant::now();
         match capturer.capture() {
-            Ok(frame) => {
-                // Drop the frame if the channel is full (viewer is slow).
-                match tx.try_send(CaptureMsg::Frame(frame)) {
-                    Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(_)) => {}
-                    Err(mpsc::error::TrySendError::Closed(_)) => return,
-                }
-            }
+            Ok(frame) => match tx.try_send(CaptureMsg::Frame(frame)) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {}
+                Err(mpsc::error::TrySendError::Closed(_)) => return,
+            },
             Err(e) => {
                 let _ = tx.blocking_send(CaptureMsg::Error(e.to_string()));
                 return;
             }
         }
-        // Keep the target frame interval.
         let elapsed = start.elapsed();
         if elapsed < interval {
             std::thread::sleep(interval - elapsed);

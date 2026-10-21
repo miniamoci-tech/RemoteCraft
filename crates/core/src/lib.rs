@@ -85,7 +85,7 @@ pub enum FromRelay {
 
 /// Application-level messages exchanged between host and viewer *inside* the
 /// encrypted channel (the relay never sees these; it only sees ciphertext).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AppMessage {
     /// Sent by the host right after the secure channel opens.
     HostInfo { screen_width: u32, screen_height: u32 },
@@ -97,6 +97,65 @@ pub enum AppMessage {
     },
     /// Viewer keep-alive / readiness signal.
     ViewerReady,
+    /// An input event from the viewer to apply on the host (M3).
+    Input(InputEvent),
+}
+
+/// Mouse buttons the viewer can forward to the host.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+/// A named (non-text) key the viewer can forward. Text typing goes through
+/// [`InputEvent::Text`]; this covers navigation, editing and function keys.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum KeyName {
+    Enter,
+    Backspace,
+    Tab,
+    Escape,
+    Delete,
+    Space,
+    ArrowUp,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    /// A single character key, used for shortcuts like Ctrl+C. Plain typing
+    /// uses [`InputEvent::Text`] instead.
+    Char(char),
+    /// Function key F1..=F24.
+    Function(u8),
+}
+
+/// One input event from the viewer, applied on the host. Coordinates are
+/// normalized to `0.0..=1.0` of the remote screen, so they are independent of
+/// either side's resolution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum InputEvent {
+    /// Move the pointer to a normalized position.
+    MouseMove { x: f32, y: f32 },
+    /// Press or release a mouse button (at the current pointer position).
+    MouseButton { button: MouseButton, pressed: bool },
+    /// Scroll by a number of wheel steps (positive = up/left).
+    Scroll { dx: i32, dy: i32 },
+    /// Type literal text (one or more characters).
+    Text(String),
+    /// A single key "click" with optional modifiers held for it. Modeled as a
+    /// click (press then release) so held state never leaks between events.
+    KeyClick {
+        key: KeyName,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        meta: bool,
+    },
 }
 
 /// Encode a value into a length-prefixed frame (4-byte big-endian length
