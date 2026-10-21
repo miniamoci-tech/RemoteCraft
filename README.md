@@ -78,6 +78,27 @@ On Windows, if you build from a redirected/sandboxed folder and hit linker
 error LNK1104, point the build output at a plain path:
 `CARGO_TARGET_DIR=C:/Users/you/rc-target cargo build --release`.
 
+## Packages & releases
+
+CI builds the packages on GitHub Actions:
+
+- **`CI`** (`.github/workflows/ci.yml`) runs `fmt`, `clippy -D warnings` and the
+  tests on every push and PR to `main`.
+- **`Release packages`** (`.github/workflows/release.yml`) builds a Windows
+  setup `.exe` (Inno Setup) + portable zip, and a universal macOS `.dmg`.
+
+To cut a release, push a version tag; the installers are built and attached to
+the GitHub release automatically:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+You can also trigger the workflow manually from the repo's **Actions** tab
+("Release packages" → "Run workflow"); it then uploads the installers as
+downloadable run artifacts without creating a release.
+
 ## Roadmap
 
 - [x] M0 — Relay server: registration, ID assignment, session brokering, opaque

@@ -1,0 +1,97 @@
+name: Release packages
+
+# Build the Windows setup .exe and the macOS .dmg. Runs on a version tag
+# (e.g. v0.1.0) and can also be run manually from the Actions tab, which just
+# produces downloadable artifacts without creating a release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows setup .exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release -p remotecraft -p remotecraft-relay
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\windows\remotecraft.iss
+        shell: pwsh
+
+      - name: Portable zip
+        run: |
+          mkdir dist\portable
+          copy target\release\remotecraft.exe dist\portable\
+          copy target\release\remotecraft-relay.exe dist\portable\
+          copy README.md dist\portable\
+          Compress-Archive -Path dist\portable\* -DestinationPath dist\RemoteCraft-windows-portable.zip -Force
+        shell: pwsh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: |
+            dist/RemoteCraft-Setup.exe
+            dist/RemoteCraft-windows-portable.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/RemoteCraft-Setup.exe
+            dist/RemoteCraft-windows-portable.zip
+
+  macos:
+    name: macOS .dmg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build universal binaries
+        run: |
+          cargo build --release --target x86_64-apple-darwin -p remotecraft -p remotecraft-relay
+          cargo build --release --target aarch64-apple-darwin -p remotecraft -p remotecraft-relay
+          mkdir -p dist/dmg
+          lipo -create -output dist/dmg/remotecraft \
+            target/x86_64-apple-darwin/release/remotecraft \
+            target/aarch64-apple-darwin/release/remotecraft
+          lipo -create -output dist/dmg/remotecraft-relay \
+            target/x86_64-apple-darwin/release/remotecraft-relay \
+            target/aarch64-apple-darwin/release/remotecraft-relay
+          cp packaging/macos/README.txt dist/dmg/README.txt
+
+      - name: Build .dmg
+        run: |
+          hdiutil create -volname RemoteCraft -srcfolder dist/dmg \
+            -ov -format UDZO dist/RemoteCraft-macos.dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/RemoteCraft-macos.dmg
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/RemoteCraft-macos.dmg
