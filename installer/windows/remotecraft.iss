@@ -3,7 +3,7 @@
 ; Per-user install (no admin required); adds the install dir to the user PATH.
 
 #define AppName "RemoteCraft"
-#define AppVersion "0.1.1"
+#define AppVersion "0.1.2"
 #define AppPublisher "miniamoci-tech"
 #define AppURL "https://github.com/miniamoci-tech/RemoteCraft"
 
@@ -29,6 +29,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "italian"; MessagesFile: "compiler:Languages\Italian.isl"
 
 [Tasks]
+Name: "desktopicon"; Description: "Create a desktop icon for RemoteCraft"; Flags: checkedonce
 Name: "addtopath"; Description: "Add RemoteCraft to my PATH (run it from any terminal)"; Flags: checkedonce
 
 [Files]
@@ -37,7 +38,10 @@ Source: "..\..\target\release\remotecraft-relay.exe"; DestDir: "{app}"; Flags: i
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-; A ready-to-type command prompt opened in the install directory.
+; Double-click to open the graphical launcher (no command line needed).
+Name: "{group}\RemoteCraft"; Filename: "{app}\remotecraft.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\RemoteCraft"; Filename: "{app}\remotecraft.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+; A ready-to-type command prompt opened in the install directory, for the CLI.
 Name: "{group}\RemoteCraft Prompt"; Filename: "{cmd}"; Parameters: "/k echo RemoteCraft. Try:  remotecraft view --relay HOST:21118 --id ID --password PW & cd /d ""{app}"""; WorkingDir: "{app}"
 Name: "{group}\README"; Filename: "{app}\README.md"
 Name: "{group}\Uninstall RemoteCraft"; Filename: "{uninstallexe}"
