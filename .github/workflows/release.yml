@@ -8,6 +8,12 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Needed so the GITHUB_TOKEN can create the GitHub release and attach the
+# built installers to it (otherwise softprops/action-gh-release gets a 403
+# "Resource not accessible by integration").
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 

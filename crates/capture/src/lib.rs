@@ -46,6 +46,8 @@ pub struct Frame {
 pub struct Capturer {
     monitor: Monitor,
     quality: u8,
+    width: u32,
+    height: u32,
 }
 
 impl Capturer {
@@ -53,15 +55,26 @@ impl Capturer {
     /// primary). `quality` is the JPEG quality 1..=100.
     pub fn primary(quality: u8) -> Result<Self, CaptureError> {
         let monitors = Monitor::all().map_err(|e| CaptureError::Capture(e.to_string()))?;
+        // `is_primary()` returns a Result in xcap 0.9; treat an error as "not
+        // primary" so a single misbehaving monitor can't abort selection.
         let monitor = monitors
             .iter()
-            .find(|m| m.is_primary())
+            .find(|m| m.is_primary().unwrap_or(false))
             .cloned()
             .or_else(|| monitors.into_iter().next())
             .ok_or(CaptureError::NoMonitor)?;
+        // xcap 0.9 returns these as Result; read them once at bind time.
+        let width = monitor
+            .width()
+            .map_err(|e| CaptureError::Capture(e.to_string()))?;
+        let height = monitor
+            .height()
+            .map_err(|e| CaptureError::Capture(e.to_string()))?;
         Ok(Self {
             monitor,
             quality: quality.clamp(1, 100),
+            width,
+            height,
         })
     }
 
@@ -79,11 +92,11 @@ impl Capturer {
     }
 
     pub fn width(&self) -> u32 {
-        self.monitor.width()
+        self.width
     }
 
     pub fn height(&self) -> u32 {
-        self.monitor.height()
+        self.height
     }
 }
 
