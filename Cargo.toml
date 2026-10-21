@@ -4,6 +4,8 @@ members = [
     "crates/core",
     "crates/relay",
     "crates/net",
+    "crates/capture",
+    "crates/app",
     "crates/probe",
 ]
 
@@ -27,3 +29,5 @@ thiserror = "2.0.17"
 snow = "0.9.6"
 sha2 = "0.10.9"
 rand = "0.8.5"
+xcap = "0.0.14"
+image = { version = "0.25.5", default-features = false, features = ["jpeg"] }

@@ -1,0 +1,21 @@
+[package]
+name = "remotecraft-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+xcap = { workspace = true }
+image = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+remotecraft-core = { path = "../core" }
+remotecraft-net = { path = "../net" }
+remotecraft-relay = { path = "../relay" }
+tokio = { workspace = true }

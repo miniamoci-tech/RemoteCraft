@@ -48,6 +48,36 @@ async fn correct_password_establishes_encrypted_channel() {
 }
 
 #[tokio::test]
+async fn large_message_is_chunked_and_reassembled() {
+    let relay = start_relay().await;
+
+    let mut host = RelayClient::connect(&relay, None).await.expect("host connect");
+    let host_id = host.id().to_string();
+
+    // A payload several times larger than one Noise message.
+    let payload: Vec<u8> = (0..500_000u32).map(|i| (i % 251) as u8).collect();
+    let expected = payload.clone();
+
+    let host_task = tokio::spawn(async move {
+        host.wait_for_peer().await.expect("peer");
+        let mut sc = SecureChannel::handshake(&mut host, false, "pw").await.expect("hs");
+        let got = sc.recv_message(&mut host).await.expect("recv big");
+        assert_eq!(got, expected, "reassembled message must match");
+        // Echo back something small to release the viewer.
+        sc.send_message(&host, b"ok").await.expect("ack");
+    });
+
+    let mut viewer = RelayClient::connect(&relay, None).await.expect("viewer connect");
+    viewer.connect_to(&host_id).await.expect("pair");
+    let mut sc = SecureChannel::handshake(&mut viewer, true, "pw").await.expect("hs");
+    sc.send_message(&viewer, &payload).await.expect("send big");
+    let ack = sc.recv_message(&mut viewer).await.expect("ack");
+    assert_eq!(ack, b"ok");
+
+    host_task.await.expect("host task");
+}
+
+#[tokio::test]
 async fn wrong_password_fails_handshake() {
     let relay = start_relay().await;
 

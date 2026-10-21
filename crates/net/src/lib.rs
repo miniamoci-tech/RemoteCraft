@@ -49,6 +49,11 @@ const PSK_DOMAIN: &[u8] = b"remotecraft-psk-v1";
 /// that need more must chunk. Kept well under the limit.
 pub const MAX_PLAINTEXT: usize = 65_000;
 
+/// Largest logical message [`SecureChannel::send_message`] accepts, in bytes.
+/// Bounds the buffer a hostile peer can make the receiver reassemble. A
+/// generous cap for full-screen JPEG frames.
+pub const MAX_MESSAGE: usize = 32 * 1024 * 1024;
+
 /// Outbound queue depth to the relay before we treat the peer as stalled.
 const OUTBOUND_QUEUE: usize = 1024;
 
@@ -341,6 +346,65 @@ impl SecureChannel {
     pub async fn recv(&mut self, client: &mut RelayClient) -> Result<Vec<u8>, NetError> {
         let ct = client.recv().await?;
         self.decrypt(&ct)
+    }
+
+    /// Send a logical message of any size, split across as many encrypted
+    /// Noise messages as needed. The first chunk carries a 4-byte big-endian
+    /// total length; the receiver reassembles with [`recv_message`].
+    ///
+    /// [`recv_message`]: Self::recv_message
+    pub async fn send_message(
+        &mut self,
+        client: &RelayClient,
+        data: &[u8],
+    ) -> Result<(), NetError> {
+        if data.len() > MAX_MESSAGE {
+            return Err(NetError::TooLarge(data.len()));
+        }
+        // data.len() <= MAX_MESSAGE which fits in u32.
+        let total = (data.len() as u32).to_be_bytes();
+        let mut first = Vec::with_capacity(4 + data.len().min(MAX_PLAINTEXT - 4));
+        first.extend_from_slice(&total);
+
+        // Fill the first chunk's remaining room, then send the rest in full
+        // MAX_PLAINTEXT chunks.
+        let head = data.len().min(MAX_PLAINTEXT - 4);
+        first.extend_from_slice(&data[..head]);
+        self.send(client, &first).await?;
+
+        let mut offset = head;
+        while offset < data.len() {
+            let end = (offset + MAX_PLAINTEXT).min(data.len());
+            self.send(client, &data[offset..end]).await?;
+            offset = end;
+        }
+        Ok(())
+    }
+
+    /// Receive a logical message sent with [`send_message`].
+    ///
+    /// [`send_message`]: Self::send_message
+    pub async fn recv_message(&mut self, client: &mut RelayClient) -> Result<Vec<u8>, NetError> {
+        let first = self.recv(client).await?;
+        if first.len() < 4 {
+            return Err(NetError::Unexpected { expected: "message length prefix" });
+        }
+        let total = u32::from_be_bytes([first[0], first[1], first[2], first[3]]) as usize;
+        if total > MAX_MESSAGE {
+            return Err(NetError::TooLarge(total));
+        }
+        let mut acc = Vec::with_capacity(total);
+        acc.extend_from_slice(&first[4..]);
+        while acc.len() < total {
+            let chunk = self.recv(client).await?;
+            acc.extend_from_slice(&chunk);
+            // Guard against a peer that overshoots the declared length.
+            if acc.len() > total {
+                acc.truncate(total);
+                break;
+            }
+        }
+        Ok(acc)
     }
 }
 

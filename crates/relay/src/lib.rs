@@ -184,7 +184,7 @@ impl Relay {
                     self.open_session(id, &target);
                 }
                 ToRelay::Data(bytes) => {
-                    self.forward_data(id, bytes);
+                    self.forward_data(id, bytes).await;
                 }
             }
         }
@@ -307,7 +307,7 @@ impl Relay {
         info!(from = %from, target = %target, session, "session opened");
     }
 
-    fn forward_data(&self, from: &PeerId, bytes: Vec<u8>) {
+    async fn forward_data(&self, from: &PeerId, bytes: Vec<u8>) {
         let target_tx = {
             let peers = match self.peers.lock() {
                 Ok(p) => p,
@@ -319,9 +319,13 @@ impl Relay {
                 .and_then(|p| peers.get(&p).map(|e| e.tx.clone()))
         };
         if let Some(tx) = target_tx {
-            // Drop the frame if the partner is backed up rather than blocking
-            // the whole relay; a stalled viewer should not stall the host.
-            let _ = tx.try_send(FromRelay::Data(bytes));
+            // The data plane must be reliable and ordered: application
+            // messages are chunked across several Data frames, so dropping one
+            // mid-message would corrupt the stream. Await instead, which
+            // applies backpressure to the sender when the receiver is slow.
+            // (Whole-frame dropping to control latency is the app's job, at
+            // the capture source, not the relay's.)
+            let _ = tx.send(FromRelay::Data(bytes)).await;
         }
     }
 

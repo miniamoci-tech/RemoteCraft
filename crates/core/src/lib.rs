@@ -83,6 +83,22 @@ pub enum FromRelay {
     SessionClosed { session: u64 },
 }
 
+/// Application-level messages exchanged between host and viewer *inside* the
+/// encrypted channel (the relay never sees these; it only sees ciphertext).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AppMessage {
+    /// Sent by the host right after the secure channel opens.
+    HostInfo { screen_width: u32, screen_height: u32 },
+    /// One JPEG-encoded screen frame from the host.
+    Frame {
+        width: u32,
+        height: u32,
+        jpeg: Vec<u8>,
+    },
+    /// Viewer keep-alive / readiness signal.
+    ViewerReady,
+}
+
 /// Encode a value into a length-prefixed frame (4-byte big-endian length
 /// followed by the bincode payload).
 pub fn encode_frame<T: Serialize>(value: &T) -> Result<Vec<u8>, ProtocolError> {
@@ -115,6 +131,18 @@ pub fn decode_frame<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, Prot
     bincode::deserialize(body).map_err(|e| ProtocolError::Decode(e.to_string()))
 }
 
+/// Serialize a value to bare bincode bytes, **without** the 4-byte length
+/// prefix that [`encode_frame`] adds.
+///
+/// Use this for application messages ([`AppMessage`]) that travel inside the
+/// encrypted channel, where the secure-channel layer handles length and
+/// chunking itself. The inverse is [`decode_frame`]. (Mixing [`encode_frame`]
+/// with [`decode_frame`] corrupts the value, because the latter does not skip
+/// the prefix.)
+pub fn to_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, ProtocolError> {
+    bincode::serialize(value).map_err(|e| ProtocolError::Encode(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +166,30 @@ mod tests {
     fn oversized_length_is_rejected_without_allocating() {
         let err = checked_frame_len(u32::MAX).expect_err("should reject");
         assert!(matches!(err, ProtocolError::FrameTooLarge(_)));
+    }
+
+    #[test]
+    fn app_message_round_trips_via_to_bytes() {
+        let msg = AppMessage::Frame {
+            width: 1920,
+            height: 1080,
+            jpeg: vec![0xFF, 0xD8, 1, 2, 3, 4, 5],
+        };
+        let bytes = to_bytes(&msg).expect("to_bytes");
+        let back: AppMessage = decode_frame(&bytes).expect("decode_frame");
+        assert_eq!(back, msg);
+    }
+
+    #[test]
+    fn encode_frame_and_decode_frame_must_not_be_mixed() {
+        // encode_frame adds a length prefix; decode_frame does not skip it, so
+        // feeding encode_frame output to decode_frame yields the wrong value
+        // (this guards the bug the capture pipeline test caught).
+        let msg = AppMessage::ViewerReady;
+        let framed = encode_frame(&msg).expect("encode");
+        let wrong: Result<AppMessage, _> = decode_frame(&framed);
+        // It must not silently decode back to the same value.
+        assert!(!wrong.map(|v| v == msg).unwrap_or(false));
     }
 
     #[test]
