@@ -8,8 +8,12 @@
 //! password (random one-time if none is given, fixed if supplied), waits for a
 //! viewer, authenticates, and streams JPEG screen frames.
 //!
-//! `view` opens a window showing the remote screen. (Mouse/keyboard control
-//! and audio are later milestones.)
+//! `view` opens a window showing the remote screen, forwards mouse/keyboard
+//! input, plays remote audio, and browses/downloads remote files.
+//!
+//! With no arguments (e.g. launched from its desktop icon) it opens a small
+//! graphical launcher so a non-technical user can pick a role and fill in the
+//! fields without the command line.
 
 #![deny(
     clippy::unwrap_used,
@@ -21,6 +25,7 @@
 )]
 
 mod host;
+mod launcher;
 mod viewer;
 
 fn main() -> anyhow::Result<()> {
@@ -37,13 +42,24 @@ fn main() -> anyhow::Result<()> {
     match mode {
         Some("host") => host::run(&args),
         Some("view") => viewer::run(&args),
-        _ => {
-            eprintln!(
-                "usage:\n  remotecraft host --relay <host:port> [--password <pw>] [--quality 1-100] [--fps N]\n  remotecraft view --relay <host:port> --id <id> --password <pw>"
-            );
+        // No arguments: open the graphical launcher.
+        None => launcher::run(),
+        Some("--help") | Some("-h") | Some("help") => {
+            print_usage();
+            Ok(())
+        }
+        Some(other) => {
+            eprintln!("unknown command: {other}\n");
+            print_usage();
             std::process::exit(2);
         }
     }
+}
+
+fn print_usage() {
+    eprintln!(
+        "usage:\n  remotecraft                 open the graphical launcher\n  remotecraft host --relay <host:port> [--password <pw>] [--quality 1-100] [--fps N] [--audio]\n  remotecraft view --relay <host:port> --id <id> --password <pw>"
+    );
 }
 
 /// Read the value following `name` in the argument list.

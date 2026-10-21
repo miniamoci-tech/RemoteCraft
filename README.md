@@ -10,8 +10,10 @@ control an office PC. Both machines run the same desktop app; a small **relay
 server** that you host (on Linux or on a Windows PC in the office LAN) connects
 them by a short numeric ID, so neither PC needs an inbound port opened.
 
-> Status: **early development.** The relay server works and is tested. The
-> desktop host/client app is next (see Roadmap).
+> Status: **working end to end.** The relay, the encrypted host/viewer
+> session, screen sharing, mouse/keyboard control, remote audio and file
+> download all work, and a graphical launcher lets a non-technical user pick a
+> role without the command line (see Roadmap).
 
 ## Components
 
@@ -19,7 +21,7 @@ them by a short numeric ID, so neither PC needs an inbound port opened.
 |-----------|-------|---------|---------|
 | Relay server | `remotecraft-relay` | Linux, Windows, macOS | Rendezvous + byte relay between two peers, addressed by numeric ID. Stores nothing, inspects nothing. |
 | Protocol | `remotecraft-core` | — | Shared wire framing and control messages. |
-| Desktop app | `remotecraft` *(planned)* | Windows, macOS | Host (share this screen) and viewer (control a remote screen) in one app. |
+| Desktop app | `remotecraft` | Windows, macOS | Host (share this screen) and viewer (control a remote screen) in one app, with a graphical launcher. |
 
 ## How it will work (target design)
 
@@ -109,7 +111,9 @@ downloadable run artifacts without creating a release.
 - [x] M4 (channel) — Attended (random one-time) and unattended (fixed) password
   authentication and E2E encryption of the peer channel. Wrong password fails
   the handshake; the relay only ever sees ciphertext.
-- [ ] M2 — Screen capture + frame streaming; viewer window (GUI app).
+- [x] M2 — Screen capture + frame streaming; viewer window (GUI app). The
+  host captures its primary monitor (xcap), JPEG-encodes frames and streams
+  them; the viewer shows them scaled to its window.
 - [x] M3 — Mouse + keyboard control: the viewer forwards pointer moves,
   clicks, scroll, typed text and shortcuts; the host injects them (enigo).
   Coordinates are normalized, so it is resolution-independent. On macOS the
@@ -123,8 +127,14 @@ downloadable run artifacts without creating a release.
   through its default output device (cpal). Enabled with `host --audio`.
   macOS host audio capture is not implemented yet (needs ScreenCaptureKit or a
   virtual device); the viewer plays audio on any platform.
-- [ ] M7 — Packaging: signed-where-possible Windows setup `.exe` and macOS
-  `.dmg`, built in CI.
+- [x] M7 — Packaging: Windows setup `.exe` (Inno Setup) + portable zip and a
+  universal macOS `.dmg`, built in CI on a version tag and attached to the
+  GitHub release.
+- [x] M8 — Graphical launcher: started with no arguments (e.g. from the
+  desktop icon), it opens a small window to pick a role — view another
+  computer or share this screen (attended one-time or unattended fixed
+  password) — and fills the fields in, so no command line is needed. The host
+  role gets a status window showing the ID and one-time password to read out.
 
 ### Security note
 

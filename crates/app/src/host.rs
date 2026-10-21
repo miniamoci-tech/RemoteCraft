@@ -7,7 +7,7 @@
 //! own dedicated thread.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use remotecraft_capture::{Capturer, Frame};
@@ -24,6 +24,102 @@ enum CaptureMsg {
     Error(String),
 }
 
+/// How to start a host.
+#[derive(Clone)]
+pub struct HostConfig {
+    pub relay: String,
+    pub password: String,
+    /// True when the password was auto-generated (attended, one-time).
+    pub attended: bool,
+    pub quality: u8,
+    pub fps: u32,
+    pub audio: bool,
+}
+
+/// Live host status, read by the GUI launcher.
+#[derive(Default, Clone)]
+pub struct HostStatus {
+    pub id: Option<String>,
+    pub password: String,
+    pub attended: bool,
+    pub audio: bool,
+    pub screen: Option<(u32, u32)>,
+    /// A short human-readable line describing the current state.
+    pub state: String,
+    /// Set on an unrecoverable error (capture unavailable, relay unreachable).
+    pub fatal: Option<String>,
+}
+
+pub type SharedHostStatus = Arc<Mutex<HostStatus>>;
+
+/// Where host progress is reported: the console (CLI) or shared state (GUI).
+enum Reporter {
+    Console,
+    Shared(SharedHostStatus),
+}
+
+impl Reporter {
+    fn ready(&self, id: &str, cfg: &HostConfig, screen: (u32, u32)) {
+        match self {
+            Reporter::Console => {
+                println!("Screen: {}x{}", screen.0, screen.1);
+                println!("\n  RemoteCraft host ready.");
+                println!("  ID:        {id}");
+                if cfg.attended {
+                    println!(
+                        "  Password:  {}   (one-time, attended access)",
+                        cfg.password
+                    );
+                } else {
+                    println!("  Password:  (fixed, unattended access)");
+                }
+                if cfg.audio {
+                    println!("  Audio:     remote playback will be streamed to the viewer.");
+                }
+                println!("\nOn the viewer run:");
+                println!(
+                    "  remotecraft view --relay {} --id {id} --password <password>\n",
+                    cfg.relay
+                );
+                println!("Waiting for a viewer (Ctrl+C to stop) ...");
+            }
+            Reporter::Shared(s) => {
+                if let Ok(mut st) = s.lock() {
+                    st.id = Some(id.to_string());
+                    st.password = cfg.password.clone();
+                    st.attended = cfg.attended;
+                    st.audio = cfg.audio;
+                    st.screen = Some(screen);
+                    st.state = "Waiting for someone to connect…".to_string();
+                }
+            }
+        }
+    }
+
+    fn state(&self, msg: &str) {
+        match self {
+            Reporter::Console => println!("{msg}"),
+            Reporter::Shared(s) => {
+                if let Ok(mut st) = s.lock() {
+                    st.state = msg.to_string();
+                }
+            }
+        }
+    }
+
+    fn fatal(&self, msg: &str) {
+        match self {
+            Reporter::Console => eprintln!("error: {msg}"),
+            Reporter::Shared(s) => {
+                if let Ok(mut st) = s.lock() {
+                    st.fatal = Some(msg.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// CLI entry: `remotecraft host --relay ... [--password ...] [...]`.
 pub fn run(args: &[String]) -> anyhow::Result<()> {
     let relay =
         flag(args, "--relay").ok_or_else(|| anyhow::anyhow!("--relay <host:port> is required"))?;
@@ -40,72 +136,90 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         .clamp(1, 60);
     let audio = args.iter().any(|a| a == "--audio");
 
+    let config = HostConfig {
+        relay,
+        password,
+        attended,
+        quality,
+        fps,
+        audio,
+    };
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime
-        .block_on(async move { host_loop(&relay, &password, attended, quality, fps, audio).await })
+    runtime.block_on(async move { host_loop(config, Reporter::Console).await });
+    Ok(())
 }
 
-async fn host_loop(
-    relay: &str,
-    password: &str,
-    attended: bool,
-    quality: u8,
-    fps: u32,
-    audio: bool,
-) -> anyhow::Result<()> {
+/// GUI entry: start the host on `handle` and report into `status`.
+pub fn spawn_gui(handle: &tokio::runtime::Handle, config: HostConfig, status: SharedHostStatus) {
+    handle.spawn(async move { host_loop(config, Reporter::Shared(status)).await });
+}
+
+async fn host_loop(config: HostConfig, reporter: Reporter) {
     let active = Arc::new(AtomicBool::new(false));
     let (frame_tx, mut frame_rx) = mpsc::channel::<CaptureMsg>(2);
 
-    let interval = Duration::from_millis(1000 / fps as u64);
+    let interval = Duration::from_millis(1000 / config.fps.max(1) as u64);
     let active_thread = active.clone();
+    let quality = config.quality;
     std::thread::spawn(move || capture_thread(quality, interval, active_thread, frame_tx));
 
     let (width, height) = match frame_rx.recv().await {
         Some(CaptureMsg::Ready { width, height }) => (width, height),
-        Some(CaptureMsg::Error(e)) => anyhow::bail!("screen capture unavailable: {e}"),
-        _ => anyhow::bail!("capture thread stopped before reporting readiness"),
+        Some(CaptureMsg::Error(e)) => {
+            reporter.fatal(&format!("screen capture unavailable: {e}"));
+            return;
+        }
+        _ => {
+            reporter.fatal("capture stopped before reporting readiness");
+            return;
+        }
     };
-    println!("Screen: {width}x{height}");
 
-    let client = Arc::new(RelayClient::connect(relay, None).await?);
+    let client = match RelayClient::connect(&config.relay, None).await {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            reporter.fatal(&format!("cannot reach relay {}: {e}", config.relay));
+            return;
+        }
+    };
     let id = client.id().to_string();
-
-    println!("\n  RemoteCraft host ready.");
-    println!("  ID:        {id}");
-    if attended {
-        println!("  Password:  {password}   (one-time, attended access)");
-    } else {
-        println!("  Password:  (fixed, unattended access)");
-    }
-    if audio {
-        println!("  Audio:     remote playback will be streamed to the viewer.");
-    }
-    println!("\nOn the viewer run:");
-    println!("  remotecraft view --relay {relay} --id {id} --password <password>\n");
-    println!("Waiting for a viewer (Ctrl+C to stop) ...");
+    reporter.ready(&id, &config, (width, height));
 
     loop {
-        let (session, peer) = match client.wait_for_peer().await {
+        let (_session, peer) = match client.wait_for_peer().await {
             Ok(v) => v,
             Err(e) => {
-                println!("[-] {e}. Waiting again ...");
+                reporter.state(&format!("Waiting again ({e})…"));
                 continue;
             }
         };
-        println!("[+] Viewer {peer} connected (session {session}). Authenticating ...");
+        reporter.state(&format!("{peer} is connecting — checking password…"));
 
-        let sc = match SecureChannel::handshake(&client, false, password).await {
+        let sc = match SecureChannel::handshake(&client, false, &config.password).await {
             Ok(sc) => sc,
             Err(e) => {
-                println!("[x] Authentication failed: {e}. Waiting again ...");
+                reporter.state(&format!(
+                    "Someone tried with the wrong password ({e}). Waiting…"
+                ));
                 continue;
             }
         };
-        println!("[+] Authenticated. Screen + input + file transfer active.");
+        reporter.state("Connected — sharing screen, input and files.");
 
-        let reason = run_session(&client, &sc, &mut frame_rx, &active, width, height, audio).await;
+        let reason = run_session(
+            &client,
+            &sc,
+            &mut frame_rx,
+            &active,
+            width,
+            height,
+            config.audio,
+        )
+        .await;
         active.store(false, Ordering::Relaxed);
-        println!("[-] Session ended: {reason}. Waiting for a new viewer ...");
+        reporter.state(&format!(
+            "Disconnected ({reason}). Waiting for someone to connect…"
+        ));
     }
 }
 

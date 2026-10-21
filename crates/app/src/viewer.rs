@@ -55,7 +55,15 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     let target = flag(args, "--id").ok_or_else(|| anyhow::anyhow!("--id <id> is required"))?;
     let password =
         flag(args, "--password").ok_or_else(|| anyhow::anyhow!("--password <pw> is required"))?;
+    run_with(relay, target, password)
+}
 
+/// Open the viewer window and connect to `target` on `relay` with `password`.
+/// Shared by the CLI (`view` subcommand) and the graphical launcher.
+///
+/// Must run on the main thread: it drives `eframe::run_native`, which owns the
+/// event loop and only returns when the window closes.
+pub fn run_with(relay: String, target: String, password: String) -> anyhow::Result<()> {
     let shared = Arc::new(Mutex::new(ViewerState {
         status: "Starting ...".to_string(),
         ..Default::default()
