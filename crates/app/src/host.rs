@@ -31,6 +31,9 @@ pub struct HostConfig {
     pub password: String,
     /// True when the password was auto-generated (attended, one-time).
     pub attended: bool,
+    /// Ask the relay for this fixed 9-digit ID (unattended access, so the ID
+    /// stays the same across restarts). `None` lets the relay assign one.
+    pub desired_id: Option<String>,
     pub quality: u8,
     pub fps: u32,
     pub audio: bool,
@@ -135,11 +138,18 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         .unwrap_or(10)
         .clamp(1, 60);
     let audio = args.iter().any(|a| a == "--audio");
+    let desired_id = flag(args, "--id");
+    if let Some(id) = &desired_id {
+        if id.len() != 9 || !id.bytes().all(|b| b.is_ascii_digit()) {
+            anyhow::bail!("--id must be exactly 9 digits (e.g. 100200300)");
+        }
+    }
 
     let config = HostConfig {
         relay,
         password,
         attended,
+        desired_id,
         quality,
         fps,
         audio,
@@ -175,7 +185,7 @@ async fn host_loop(config: HostConfig, reporter: Reporter) {
         }
     };
 
-    let client = match RelayClient::connect(&config.relay, None).await {
+    let client = match RelayClient::connect(&config.relay, config.desired_id.clone()).await {
         Ok(c) => Arc::new(c),
         Err(e) => {
             reporter.fatal(&format!("cannot reach relay {}: {e}", config.relay));

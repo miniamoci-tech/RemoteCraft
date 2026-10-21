@@ -3,7 +3,7 @@
 ; Per-user install (no admin required); adds the install dir to the user PATH.
 
 #define AppName "RemoteCraft"
-#define AppVersion "0.1.2"
+#define AppVersion "0.1.3"
 #define AppPublisher "miniamoci-tech"
 #define AppURL "https://github.com/miniamoci-tech/RemoteCraft"
 

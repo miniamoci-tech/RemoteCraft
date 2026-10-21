@@ -132,21 +132,36 @@ impl LauncherApp {
                 }
             }
             Mode::Host => {
-                let (password, attended) = match self.access {
-                    HostAccess::Attended => (random_password(8), true),
+                let (password, attended, desired_id) = match self.access {
+                    HostAccess::Attended => (random_password(8), true, None),
                     HostAccess::Unattended => {
                         if self.password.is_empty() {
                             self.error =
                                 Some("Set a fixed password for unattended access.".to_string());
                             return;
                         }
-                        (self.password.clone(), false)
+                        // A fixed ID is optional but recommended so the ID stays
+                        // the same across restarts. Empty = let the relay pick.
+                        let id = self.id.trim();
+                        let desired = if id.is_empty() {
+                            None
+                        } else if id.len() == 9 && id.bytes().all(|b| b.is_ascii_digit()) {
+                            Some(id.to_string())
+                        } else {
+                            self.error = Some(
+                                "The fixed ID must be exactly 9 digits (or left empty)."
+                                    .to_string(),
+                            );
+                            return;
+                        };
+                        (self.password.clone(), false, desired)
                     }
                 };
                 Choice::Host(HostConfig {
                     relay: relay.clone(),
                     password,
                     attended,
+                    desired_id,
                     quality: 60,
                     fps: 10,
                     audio: self.audio,
@@ -235,6 +250,14 @@ impl eframe::App for LauncherApp {
                                     egui::TextEdit::singleline(&mut self.password)
                                         .password(true)
                                         .hint_text("choose a strong password")
+                                        .desired_width(300.0),
+                                );
+                                ui.end_row();
+
+                                ui.label("Fixed ID");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.id)
+                                        .hint_text("9 digits, keep it the same (optional)")
                                         .desired_width(300.0),
                                 );
                                 ui.end_row();

@@ -58,7 +58,7 @@ fn main() -> anyhow::Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  remotecraft                 open the graphical launcher\n  remotecraft host --relay <host:port> [--password <pw>] [--quality 1-100] [--fps N] [--audio]\n  remotecraft view --relay <host:port> --id <id> --password <pw>"
+        "usage:\n  remotecraft                 open the graphical launcher\n  remotecraft host --relay <host:port> [--password <pw>] [--id <9 digits>] [--quality 1-100] [--fps N] [--audio]\n  remotecraft view --relay <host:port> --id <id> --password <pw>"
     );
 }
 
