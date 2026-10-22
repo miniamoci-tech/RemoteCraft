@@ -33,6 +33,16 @@ struct Download {
     error: Option<String>,
 }
 
+/// Progress of the current/last file upload (viewer -> host, M12).
+#[derive(Clone)]
+struct Upload {
+    name: String,
+    sent: u64,
+    total: u64,
+    done: bool,
+    error: Option<String>,
+}
+
 /// Relay/connection state, shown as a coloured LED in the viewer.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum ConnState {
@@ -53,6 +63,10 @@ struct ViewerState {
     status: String,
     listing: Option<Listing>,
     download: Option<Download>,
+    /// Progress of the current/last upload to the host (M12).
+    upload: Option<Upload>,
+    /// The host's version string (from HostInfo), to gate upload support.
+    host_version: String,
     /// The host's monitors and which one is currently shown (M10).
     monitors: Vec<MonitorInfo>,
     active_monitor: u32,
@@ -130,7 +144,7 @@ pub fn start_viewer(
     password: String,
 ) -> ViewerApp {
     let shared = Arc::new(Mutex::new(ViewerState {
-        status: "Starting ...".to_string(),
+        status: "Avvio…".to_string(),
         ..Default::default()
     }));
 
@@ -149,7 +163,11 @@ pub fn start_viewer(
         shown_version: u64::MAX,
         out_tx,
         show_files: false,
+        show_local: false,
         fullscreen: false,
+        local_dir: local_home(),
+        local_entries: Vec::new(),
+        local_loaded: false,
     }
 }
 
@@ -158,44 +176,72 @@ pub struct ViewerApp {
     texture: Option<egui::TextureHandle>,
     shown_version: u64,
     out_tx: mpsc::UnboundedSender<AppMessage>,
-    /// File panel starts hidden so the remote screen uses the whole window.
+    /// Remote-files panel; starts hidden so the remote screen uses the window.
     show_files: bool,
+    /// Local-files panel (to upload to the host, M12); starts hidden.
+    show_local: bool,
     fullscreen: bool,
+    /// Local filesystem browsing state (viewer side), owned by the UI thread.
+    local_dir: PathBuf,
+    local_entries: Vec<DirEntry>,
+    local_loaded: bool,
+}
+
+/// The viewer's local home directory, where local browsing starts.
+fn local_home() -> PathBuf {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 impl eframe::App for ViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let (status, new_frame, listing, download, monitors, active_monitor, conn, version_warning) =
-            match self.shared.lock() {
-                Ok(s) => {
-                    let nf = if s.version != self.shown_version {
-                        self.shown_version = s.version;
-                        s.frame.clone()
-                    } else {
-                        None
-                    };
-                    (
-                        s.status.clone(),
-                        nf,
-                        s.listing.clone(),
-                        s.download.clone(),
-                        s.monitors.clone(),
-                        s.active_monitor,
-                        s.conn,
-                        s.version_warning.clone(),
-                    )
-                }
-                Err(_) => (
-                    "internal lock error".to_string(),
-                    None,
-                    None,
-                    None,
-                    Vec::new(),
-                    0,
-                    ConnState::Failed,
-                    None,
-                ),
-            };
+        let (
+            status,
+            new_frame,
+            listing,
+            download,
+            monitors,
+            active_monitor,
+            conn,
+            version_warning,
+            upload,
+            host_version,
+        ) = match self.shared.lock() {
+            Ok(s) => {
+                let nf = if s.version != self.shown_version {
+                    self.shown_version = s.version;
+                    s.frame.clone()
+                } else {
+                    None
+                };
+                (
+                    s.status.clone(),
+                    nf,
+                    s.listing.clone(),
+                    s.download.clone(),
+                    s.monitors.clone(),
+                    s.active_monitor,
+                    s.conn,
+                    s.version_warning.clone(),
+                    s.upload.clone(),
+                    s.host_version.clone(),
+                )
+            }
+            Err(_) => (
+                "errore interno".to_string(),
+                None,
+                None,
+                None,
+                Vec::new(),
+                0,
+                ConnState::Failed,
+                None,
+                None,
+                String::new(),
+            ),
+        };
 
         if let Some((w, h, rgba)) = new_frame {
             if rgba.len() == w * h * 4 {
@@ -217,9 +263,10 @@ impl eframe::App for ViewerApp {
             ui.horizontal(|ui| {
                 relay_led(ui, conn);
                 ui.separator();
-                ui.toggle_value(&mut self.show_files, "📁 Files");
+                ui.toggle_value(&mut self.show_files, "📁 File remoti");
+                ui.toggle_value(&mut self.show_local, "📤 Invia file");
                 if ui
-                    .toggle_value(&mut self.fullscreen, "⛶ Fullscreen")
+                    .toggle_value(&mut self.fullscreen, "⛶ Schermo intero")
                     .changed()
                 {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
@@ -238,7 +285,7 @@ impl eframe::App for ViewerApp {
                                 m.index + 1,
                                 m.width,
                                 m.height,
-                                if m.is_primary { " (primary)" } else { "" }
+                                if m.is_primary { " (principale)" } else { "" }
                             ))
                             .clicked()
                             && !selected
@@ -269,6 +316,14 @@ impl eframe::App for ViewerApp {
                 });
         }
 
+        if self.show_local {
+            egui::SidePanel::right("local_files")
+                .default_width(340.0)
+                .show(ctx, |ui| {
+                    self.local_panel(ui, upload.as_ref(), &host_version)
+                });
+        }
+
         let mut image_rect = None;
         egui::CentralPanel::default().show(ctx, |ui| match &self.texture {
             Some(tex) => {
@@ -281,7 +336,7 @@ impl eframe::App for ViewerApp {
             }
             None => {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Waiting for the first frame ...");
+                    ui.label("In attesa della prima immagine…");
                 });
             }
         });
@@ -301,7 +356,7 @@ impl ViewerApp {
         listing: Option<&Listing>,
         download: Option<&Download>,
     ) {
-        ui.heading("Remote files");
+        ui.heading("File remoti");
         ui.separator();
 
         match listing {
@@ -327,7 +382,7 @@ impl ViewerApp {
                                         });
                                     }
                                 } else {
-                                    if ui.button("⤓").on_hover_text("Download").clicked() {
+                                    if ui.button("⤓").on_hover_text("Scarica").clicked() {
                                         self.request(AppMessage::GetFile {
                                             path: entry.path.clone(),
                                         });
@@ -343,16 +398,19 @@ impl ViewerApp {
                     });
             }
             None => {
-                ui.label("Connecting / loading file list ...");
+                ui.label("Connessione / caricamento elenco file…");
             }
         }
 
         ui.separator();
         if let Some(d) = download {
             if let Some(err) = &d.error {
-                ui.colored_label(egui::Color32::LIGHT_RED, format!("Download failed: {err}"));
+                ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    format!("Scaricamento fallito: {err}"),
+                );
             } else if d.done {
-                ui.label(format!("✅ {} downloaded", d.name));
+                ui.label(format!("✅ {} scaricato", d.name));
                 if let Some(p) = &d.saved_path {
                     ui.label(egui::RichText::new(p).small().monospace());
                 }
@@ -363,7 +421,7 @@ impl ViewerApp {
                     0.0
                 };
                 ui.label(format!(
-                    "Downloading {} — {} / {}",
+                    "Scaricamento {} — {} / {}",
                     d.name,
                     human_size(d.received),
                     human_size(d.total)
@@ -371,6 +429,187 @@ impl ViewerApp {
                 ui.add(egui::ProgressBar::new(frac).show_percentage());
             }
         }
+    }
+
+    /// Local-files panel: browse the viewer's own filesystem and upload a file
+    /// to the host (M12). Directories navigate; files have a "Send" button.
+    fn local_panel(&mut self, ui: &mut egui::Ui, upload: Option<&Upload>, host_version: &str) {
+        if !self.local_loaded {
+            self.refresh_local();
+        }
+        ui.heading("Invia un file all'altro computer");
+        ui.separator();
+        ui.label(
+            egui::RichText::new(self.local_dir.to_string_lossy())
+                .small()
+                .monospace(),
+        );
+
+        let supported = version_at_least(host_version, 0, 1, 12);
+        if !supported {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 170, 0),
+                "L'altro computer ha una versione che non riceve file. \
+                 Aggiornalo a 0.1.12 o successiva.",
+            );
+        }
+        let busy = matches!(upload, Some(u) if !u.done);
+
+        if let Some(parent) = self.local_dir.parent().map(|p| p.to_path_buf()) {
+            if ui.button("⬆  Su").clicked() {
+                self.local_dir = parent;
+                self.local_loaded = false;
+            }
+        }
+        ui.separator();
+
+        let entries = self.local_entries.clone();
+        let mut nav: Option<PathBuf> = None;
+        let mut to_send: Option<(PathBuf, String, u64)> = None;
+        egui::ScrollArea::vertical()
+            .max_height(ui.available_height() - 110.0)
+            .show(ui, |ui| {
+                for entry in &entries {
+                    ui.horizontal(|ui| {
+                        if entry.is_dir {
+                            if ui.button(format!("📁 {}", entry.name)).clicked() {
+                                nav = Some(PathBuf::from(&entry.path));
+                            }
+                        } else {
+                            let send =
+                                ui.add_enabled(supported && !busy, egui::Button::new("⤒").small());
+                            if send.on_hover_text("Invia al computer remoto").clicked() {
+                                to_send = Some((
+                                    PathBuf::from(&entry.path),
+                                    entry.name.clone(),
+                                    entry.size,
+                                ));
+                            }
+                            ui.label(format!("{}  ({})", entry.name, human_size(entry.size)));
+                        }
+                    });
+                }
+            });
+
+        if let Some(dir) = nav {
+            self.local_dir = dir;
+            self.local_loaded = false;
+        }
+        if let Some((path, name, size)) = to_send {
+            self.start_upload(ui.ctx().clone(), path, name, size);
+        }
+
+        ui.separator();
+        if let Some(u) = upload {
+            if let Some(err) = &u.error {
+                ui.colored_label(egui::Color32::LIGHT_RED, format!("Invio fallito: {err}"));
+            } else if u.done {
+                ui.label(format!("✅ {} inviato", u.name));
+            } else {
+                let frac = if u.total > 0 {
+                    u.sent as f32 / u.total as f32
+                } else {
+                    0.0
+                };
+                ui.label(format!(
+                    "Invio {} — {} / {}",
+                    u.name,
+                    human_size(u.sent),
+                    human_size(u.total)
+                ));
+                ui.add(egui::ProgressBar::new(frac).show_percentage());
+            }
+        }
+    }
+
+    /// Read the current local directory into `local_entries` (dirs first).
+    fn refresh_local(&mut self) {
+        self.local_loaded = true;
+        self.local_entries.clear();
+        if let Ok(read) = std::fs::read_dir(&self.local_dir) {
+            for item in read.flatten() {
+                let name = item.file_name().to_string_lossy().to_string();
+                let path = item.path().to_string_lossy().to_string();
+                let (is_dir, size) = match item.metadata() {
+                    Ok(m) => (m.is_dir(), m.len()),
+                    Err(_) => (false, 0),
+                };
+                self.local_entries.push(DirEntry {
+                    name,
+                    path,
+                    is_dir,
+                    size,
+                });
+            }
+            self.local_entries.sort_by(|a, b| {
+                b.is_dir
+                    .cmp(&a.is_dir)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+        }
+    }
+
+    /// Stream a local file to the host on a background thread (M12).
+    fn start_upload(&self, ctx: egui::Context, path: PathBuf, name: String, size: u64) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.upload = Some(Upload {
+                name: name.clone(),
+                sent: 0,
+                total: size,
+                done: false,
+                error: None,
+            });
+        }
+        let out = self.out_tx.clone();
+        let shared = self.shared.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let file = match std::fs::File::open(&path) {
+                Ok(f) => f,
+                Err(e) => {
+                    fail_upload(&shared, &ctx, &format!("apertura fallita: {e}"));
+                    return;
+                }
+            };
+            if out
+                .send(AppMessage::UploadStart {
+                    name: name.clone(),
+                    size,
+                })
+                .is_err()
+            {
+                return;
+            }
+            let mut reader = std::io::BufReader::new(file);
+            let mut buf = vec![0u8; remotecraft_files::FILE_CHUNK];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if out
+                            .send(AppMessage::UploadChunk {
+                                data: buf[..n].to_vec(),
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
+                        if let Ok(mut s) = shared.lock() {
+                            if let Some(u) = s.upload.as_mut() {
+                                u.sent += n as u64;
+                            }
+                        }
+                        ctx.request_repaint();
+                    }
+                    Err(e) => {
+                        fail_upload(&shared, &ctx, &format!("lettura fallita: {e}"));
+                        return;
+                    }
+                }
+            }
+            let _ = out.send(AppMessage::UploadEnd);
+            // The host confirms with UploadResult, handled in the recv loop.
+        });
     }
 
     fn request(&self, msg: AppMessage) {
@@ -441,21 +680,48 @@ impl ViewerApp {
     }
 }
 
+/// Mark the current upload as failed in shared state.
+fn fail_upload(shared: &Arc<Mutex<ViewerState>>, ctx: &egui::Context, message: &str) {
+    if let Ok(mut s) = shared.lock() {
+        if let Some(u) = s.upload.as_mut() {
+            u.done = true;
+            u.error = Some(message.to_string());
+        }
+    }
+    ctx.request_repaint();
+}
+
+/// Whether a dotted version string (e.g. "0.1.12") is at least `a.b.c`.
+/// An empty or unparseable string counts as "too old" (returns false).
+fn version_at_least(version: &str, a: u32, b: u32, c: u32) -> bool {
+    let mut parts = version.split('.').map(|p| p.parse::<u32>().ok());
+    let va = parts.next().flatten();
+    let vb = parts.next().flatten();
+    let vc = parts.next().flatten();
+    match (va, vb, vc) {
+        (Some(x), Some(y), Some(z)) => (x, y, z) >= (a, b, c),
+        _ => false,
+    }
+}
+
 /// A small coloured dot showing the relay/connection state, with a tooltip.
 fn relay_led(ui: &mut egui::Ui, conn: ConnState) {
     let (color, tip) = match conn {
-        ConnState::Connecting => (egui::Color32::from_rgb(230, 170, 0), "Connecting to relay…"),
+        ConnState::Connecting => (
+            egui::Color32::from_rgb(230, 170, 0),
+            "Connessione al relay…",
+        ),
         ConnState::RelayConnected => (
             egui::Color32::from_rgb(90, 160, 230),
-            "Relay connected — authenticating with the host…",
+            "Connesso al relay — autenticazione con l'host…",
         ),
         ConnState::InSession => (
             egui::Color32::from_rgb(60, 180, 75),
-            "Connected to the host through the relay",
+            "Connesso all'host tramite il relay",
         ),
         ConnState::Failed => (
             egui::Color32::from_rgb(220, 70, 70),
-            "Not connected to the relay",
+            "Non connesso al relay",
         ),
     };
     ui.label(egui::RichText::new("⏺").color(color).size(14.0))
@@ -618,25 +884,25 @@ async fn network(
     mut out_rx: mpsc::UnboundedReceiver<AppMessage>,
 ) {
     set_conn(&shared, &ctx, ConnState::Connecting);
-    set_status(&shared, &ctx, "Connecting to relay ...");
+    set_status(&shared, &ctx, "Connessione al relay…");
     let client = match RelayClient::connect(&relay, None).await {
         Ok(c) => c,
         Err(e) => {
             set_conn(&shared, &ctx, ConnState::Failed);
-            set_status(&shared, &ctx, &format!("Relay connection failed: {e}"));
+            set_status(&shared, &ctx, &format!("Connessione al relay fallita: {e}"));
             return;
         }
     };
     set_conn(&shared, &ctx, ConnState::RelayConnected);
 
-    set_status(&shared, &ctx, &format!("Connecting to host {target} ..."));
+    set_status(&shared, &ctx, &format!("Connessione all'host {target}…"));
     if let Err(e) = client.connect_to(&target).await {
         set_conn(&shared, &ctx, ConnState::Failed);
-        set_status(&shared, &ctx, &format!("Could not reach host: {e}"));
+        set_status(&shared, &ctx, &format!("Host non raggiungibile: {e}"));
         return;
     }
 
-    set_status(&shared, &ctx, "Authenticating ...");
+    set_status(&shared, &ctx, "Autenticazione…");
     // Bound the handshake: if the host never completes it (often a version
     // mismatch between the two sides), surface a clear message instead of
     // hanging on "Authenticating..." forever.
@@ -648,7 +914,7 @@ async fn network(
             set_status(
                 &shared,
                 &ctx,
-                &format!("Authentication failed (wrong password?): {e}"),
+                &format!("Autenticazione fallita (password errata?): {e}"),
             );
             return;
         }
@@ -657,8 +923,8 @@ async fn network(
             set_status(
                 &shared,
                 &ctx,
-                "No response from the host. Make sure both sides run the same \
-                 RemoteCraft version and the password is correct.",
+                "Nessuna risposta dall'host. Assicurati che entrambi abbiano la \
+                 stessa versione di RemoteCraft e che la password sia corretta.",
             );
             return;
         }
@@ -693,7 +959,7 @@ async fn network(
     });
 
     set_conn(&shared, &ctx, ConnState::InSession);
-    set_status(&shared, &ctx, "Connected. Receiving screen ...");
+    set_status(&shared, &ctx, "Connesso. Ricezione schermo…");
     let mut frames = 0u64;
     let mut download: Option<std::fs::File> = None;
 
@@ -726,8 +992,8 @@ async fn network(
                     let ours = env!("CARGO_PKG_VERSION");
                     let warning = if !host_version.is_empty() && host_version != ours {
                         Some(format!(
-                            "Version mismatch: host is {host_version}, this viewer is {ours}. \
-                             Update both to the same version if something misbehaves."
+                            "Versione diversa: l'host è {host_version}, questo viewer è {ours}. \
+                             Se qualcosa non funziona, aggiorna entrambi alla stessa versione."
                         ))
                     } else {
                         None
@@ -736,16 +1002,17 @@ async fn network(
                         s.monitors = monitors;
                         s.active_monitor = active;
                         s.version_warning = warning;
+                        s.host_version = host_version.clone();
                     }
                     let extra = if count > 1 {
-                        format!(" Monitor {} of {count}.", active + 1)
+                        format!(" Monitor {} di {count}.", active + 1)
                     } else {
                         String::new()
                     };
                     set_status(
                         &shared,
                         &ctx,
-                        &format!("Connected. Remote screen {screen_width}x{screen_height}.{extra} Mouse, keyboard & files active."),
+                        &format!("Connesso. Schermo remoto {screen_width}x{screen_height}.{extra} Mouse, tastiera e file attivi."),
                     );
                 }
                 Ok(AppMessage::DirListing {
@@ -793,6 +1060,19 @@ async fn network(
                     mark_download_error(&shared, &ctx, &message);
                     download = None;
                 }
+                Ok(AppMessage::UploadResult { ok, message, .. }) => {
+                    if let Ok(mut s) = shared.lock() {
+                        if let Some(u) = s.upload.as_mut() {
+                            u.done = true;
+                            if ok {
+                                u.sent = u.total;
+                            } else {
+                                u.error = Some(message);
+                            }
+                        }
+                    }
+                    ctx.request_repaint();
+                }
                 Ok(AppMessage::Audio {
                     sample_rate,
                     channels,
@@ -809,7 +1089,7 @@ async fn network(
             },
             Err(e) => {
                 set_conn(&shared, &ctx, ConnState::Failed);
-                set_status(&shared, &ctx, &format!("Disconnected: {e}"));
+                set_status(&shared, &ctx, &format!("Disconnesso: {e}"));
                 return;
             }
         }
@@ -824,13 +1104,9 @@ fn begin_download(
     size: u64,
 ) -> Option<std::fs::File> {
     let dir = download_dir();
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        mark_download_error(shared, ctx, &format!("cannot create download folder: {e}"));
-        return None;
-    }
-    let dest = dir.join(name);
-    match std::fs::File::create(&dest) {
-        Ok(file) => {
+    // Reject unsafe remote filenames and never overwrite an existing file.
+    match remotecraft_files::create_download(&dir, name) {
+        Ok((dest, file)) => {
             if let Ok(mut s) = shared.lock() {
                 s.download = Some(Download {
                     name: name.to_string(),
@@ -844,12 +1120,16 @@ fn begin_download(
             ctx.request_repaint();
             Some(file)
         }
-        Err(e) => {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             mark_download_error(
                 shared,
                 ctx,
-                &format!("cannot create {}: {e}", dest.display()),
+                &format!("\"{name}\" già presente: spostalo o rinominalo e riprova."),
             );
+            None
+        }
+        Err(e) => {
+            mark_download_error(shared, ctx, &format!("nome file non valido o errore: {e}"));
             None
         }
     }

@@ -111,7 +111,7 @@ impl Reporter {
                     st.attended = cfg.attended;
                     st.audio = cfg.audio;
                     st.screen = Some(screen);
-                    st.state = "Waiting for someone to connect…".to_string();
+                    st.state = "In attesa che qualcuno si colleghi…".to_string();
                 }
             }
         }
@@ -208,11 +208,11 @@ async fn host_loop(config: HostConfig, reporter: Reporter) {
     let (width, height) = match frame_rx.recv().await {
         Some(CaptureMsg::Ready { width, height, .. }) => (width, height),
         Some(CaptureMsg::Error(e)) => {
-            reporter.fatal(&format!("screen capture unavailable: {e}"));
+            reporter.fatal(&format!("cattura schermo non disponibile: {e}"));
             return;
         }
         _ => {
-            reporter.fatal("capture stopped before reporting readiness");
+            reporter.fatal("la cattura si è interrotta prima di essere pronta");
             return;
         }
     };
@@ -220,7 +220,7 @@ async fn host_loop(config: HostConfig, reporter: Reporter) {
     let client = match RelayClient::connect(&config.relay, config.desired_id.clone()).await {
         Ok(c) => Arc::new(c),
         Err(e) => {
-            reporter.fatal(&format!("cannot reach relay {}: {e}", config.relay));
+            reporter.fatal(&format!("relay {} non raggiungibile: {e}", config.relay));
             return;
         }
     };
@@ -231,22 +231,33 @@ async fn host_loop(config: HostConfig, reporter: Reporter) {
         let (_session, peer) = match client.wait_for_peer().await {
             Ok(v) => v,
             Err(e) => {
-                reporter.state(&format!("Waiting again ({e})…"));
+                reporter.state(&format!("In attesa di nuovo ({e})…"));
                 continue;
             }
         };
-        reporter.state(&format!("{peer} is connecting — checking password…"));
+        reporter.state(&format!("{peer} si sta collegando — verifica password…"));
 
-        let sc = match SecureChannel::handshake(&client, false, &config.password).await {
-            Ok(sc) => sc,
-            Err(e) => {
+        // Bound the handshake so a silent or incompatible peer can't leave the
+        // host stuck on "checking password" forever (local timeout; no wire
+        // change, so it stays compatible with older viewers).
+        let handshake = SecureChannel::handshake(&client, false, &config.password);
+        let sc = match tokio::time::timeout(Duration::from_secs(20), handshake).await {
+            Ok(Ok(sc)) => sc,
+            Ok(Err(e)) => {
                 reporter.state(&format!(
-                    "Someone tried with the wrong password ({e}). Waiting…"
+                    "Qualcuno ha provato con la password errata ({e}). In attesa…"
                 ));
                 continue;
             }
+            Err(_) => {
+                reporter.state(
+                    "Una connessione non si è completata (password errata o versione \
+                     diversa?). In attesa che qualcuno si colleghi…",
+                );
+                continue;
+            }
         };
-        reporter.state("Connected — sharing screen, input and files.");
+        reporter.state("Connesso — condivido schermo, input e file.");
 
         // Each new viewer starts on the primary monitor.
         selected.store(0, Ordering::Relaxed);
@@ -262,7 +273,7 @@ async fn host_loop(config: HostConfig, reporter: Reporter) {
         .await;
         active.store(false, Ordering::Relaxed);
         reporter.state(&format!(
-            "Disconnected ({reason}). Waiting for someone to connect…"
+            "Disconnesso ({reason}). In attesa che qualcuno si colleghi…"
         ));
     }
 }
@@ -390,6 +401,9 @@ async fn handle_incoming(
     selected: &Arc<AtomicU32>,
     monitor_count: usize,
 ) -> String {
+    // Current incoming upload, if any (viewer -> host, M12). Writes land in the
+    // host's uploads folder via the shared safe-name creator.
+    let mut upload: Option<(std::fs::File, String)> = None;
     loop {
         let bytes = match sc.recv_message(client).await {
             Ok(b) => b,
@@ -418,10 +432,70 @@ async fn handle_incoming(
                     return "sender stopped".to_string();
                 }
             }
+            Ok(AppMessage::UploadStart { name, size: _ }) => {
+                upload = None;
+                match remotecraft_files::create_download(&uploads_dir(), &name) {
+                    Ok((dest, file)) => {
+                        upload = Some((file, dest.to_string_lossy().to_string()));
+                    }
+                    Err(e) => {
+                        let _ = out_tx
+                            .send(AppMessage::UploadResult {
+                                name,
+                                ok: false,
+                                message: format!("host refused the upload: {e}"),
+                            })
+                            .await;
+                    }
+                }
+            }
+            Ok(AppMessage::UploadChunk { data }) => {
+                if let Some((file, path)) = upload.as_mut() {
+                    use std::io::Write;
+                    if let Err(e) = file.write_all(&data) {
+                        let msg = format!("write failed: {e}");
+                        let name = path.clone();
+                        upload = None;
+                        let _ = out_tx
+                            .send(AppMessage::UploadResult {
+                                name,
+                                ok: false,
+                                message: msg,
+                            })
+                            .await;
+                    }
+                }
+            }
+            Ok(AppMessage::UploadEnd) => {
+                if let Some((mut file, path)) = upload.take() {
+                    use std::io::Write;
+                    let _ = file.flush();
+                    if out_tx
+                        .send(AppMessage::UploadResult {
+                            name: path.clone(),
+                            ok: true,
+                            message: path,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return "sender stopped".to_string();
+                    }
+                }
+            }
             Ok(_) => {}
             Err(_) => {}
         }
     }
+}
+
+/// Folder where the host saves files uploaded by the viewer (M12).
+fn uploads_dir() -> std::path::PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    home.join("RemoteCraft-Uploads")
 }
 
 /// Start loopback audio capture and forward PCM blocks to the outbound queue.

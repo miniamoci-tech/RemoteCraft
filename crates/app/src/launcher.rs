@@ -126,7 +126,7 @@ pub fn run_host_window(config: HostConfig) -> anyhow::Result<()> {
     };
 
     let result = eframe::run_native(
-        "RemoteCraft — sharing this screen",
+        "RemoteCraft — condivisione schermo",
         options,
         Box::new(move |cc| {
             Ok(Box::new(HostWindow::start(
@@ -187,7 +187,8 @@ impl LauncherApp {
     fn validate(&mut self) -> Option<Choice> {
         let relay = self.relay.trim().to_string();
         if relay.is_empty() {
-            self.error = Some("Enter the relay address (e.g. 192.168.1.50:21118).".to_string());
+            self.error =
+                Some("Inserisci l'indirizzo del relay (es. 192.168.1.50:21118).".to_string());
             return None;
         }
 
@@ -197,11 +198,12 @@ impl LauncherApp {
                 let password = self.password.clone();
                 if id.is_empty() {
                     self.error =
-                        Some("Enter the ID shown on the computer you want to view.".to_string());
+                        Some("Inserisci l'ID mostrato sul computer che vuoi vedere.".to_string());
                     return None;
                 }
                 if password.is_empty() {
-                    self.error = Some("Enter the password shown on that computer.".to_string());
+                    self.error =
+                        Some("Inserisci la password mostrata su quel computer.".to_string());
                     return None;
                 }
                 Choice::View {
@@ -215,8 +217,10 @@ impl LauncherApp {
                     HostAccess::Attended => (random_password(8), true, None),
                     HostAccess::Unattended => {
                         if self.password.is_empty() {
-                            self.error =
-                                Some("Set a fixed password for unattended access.".to_string());
+                            self.error = Some(
+                                "Imposta una password fissa per l'accesso non vigilato."
+                                    .to_string(),
+                            );
                             return None;
                         }
                         // A fixed ID is optional but recommended so the ID stays
@@ -228,7 +232,7 @@ impl LauncherApp {
                             Some(id.to_string())
                         } else {
                             self.error = Some(
-                                "The fixed ID must be exactly 9 digits (or left empty)."
+                                "L'ID fisso deve avere esattamente 9 cifre (oppure lascialo vuoto)."
                                     .to_string(),
                             );
                             return None;
@@ -264,13 +268,13 @@ impl LauncherApp {
         {
             ui.add_space(8.0);
             ui.heading("RemoteCraft");
-            ui.label("Connect two computers through your relay server.");
+            ui.label("Collega due computer tramite il tuo server relay.");
             ui.add_space(12.0);
 
-            ui.label("What do you want to do?");
+            ui.label("Cosa vuoi fare?");
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.mode, Mode::View, "👁  View another computer");
-                ui.selectable_value(&mut self.mode, Mode::Host, "🖥  Share this screen");
+                ui.selectable_value(&mut self.mode, Mode::View, "👁  Vedi un altro computer");
+                ui.selectable_value(&mut self.mode, Mode::Host, "🖥  Condividi questo schermo");
             });
             ui.add_space(12.0);
 
@@ -278,20 +282,20 @@ impl LauncherApp {
                 .num_columns(2)
                 .spacing([10.0, 10.0])
                 .show(ui, |ui| {
-                    ui.label("Relay address");
+                    ui.label("Indirizzo relay");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.relay)
-                            .hint_text("host:port, e.g. 192.168.1.50:21118")
+                            .hint_text("host:porta, es. 192.168.1.50:21118")
                             .desired_width(300.0),
                     );
                     ui.end_row();
 
                     match self.mode {
                         Mode::View => {
-                            ui.label("Computer ID");
+                            ui.label("ID computer");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.id)
-                                    .hint_text("the 9-digit ID shown on the other computer")
+                                    .hint_text("l'ID di 9 cifre mostrato sull'altro computer")
                                     .desired_width(300.0),
                             );
                             ui.end_row();
@@ -300,41 +304,41 @@ impl LauncherApp {
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.password)
                                     .password(true)
-                                    .hint_text("the password shown on the other computer")
+                                    .hint_text("la password mostrata sull'altro computer")
                                     .desired_width(300.0),
                             );
                             ui.end_row();
                         }
                         Mode::Host => {
-                            ui.label("Access");
+                            ui.label("Accesso");
                             ui.vertical(|ui| {
                                 ui.radio_value(
                                     &mut self.access,
                                     HostAccess::Attended,
-                                    "Attended — show a one-time password each time",
+                                    "Vigilato — mostra una password monouso ogni volta",
                                 );
                                 ui.radio_value(
                                     &mut self.access,
                                     HostAccess::Unattended,
-                                    "Unattended — use a fixed password I set",
+                                    "Non vigilato — usa una password fissa che imposto io",
                                 );
                             });
                             ui.end_row();
 
                             if self.access == HostAccess::Unattended {
-                                ui.label("Fixed password");
+                                ui.label("Password fissa");
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.password)
                                         .password(true)
-                                        .hint_text("choose a strong password")
+                                        .hint_text("scegli una password robusta")
                                         .desired_width(300.0),
                                 );
                                 ui.end_row();
 
-                                ui.label("Fixed ID");
+                                ui.label("ID fisso");
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.id)
-                                        .hint_text("9 digits, keep it the same (optional)")
+                                        .hint_text("9 cifre, tienila sempre uguale (opzionale)")
                                         .desired_width(300.0),
                                 );
                                 ui.end_row();
@@ -343,7 +347,7 @@ impl LauncherApp {
                             ui.label("Audio");
                             ui.checkbox(
                                 &mut self.audio,
-                                "Send this computer's sound to the viewer",
+                                "Invia l'audio di questo computer a chi si collega",
                             );
                             ui.end_row();
                         }
@@ -352,8 +356,8 @@ impl LauncherApp {
 
             ui.add_space(14.0);
             let start_label = match self.mode {
-                Mode::View => "Connect",
-                Mode::Host => "Start sharing",
+                Mode::View => "Connetti",
+                Mode::Host => "Avvia condivisione",
             };
             if ui
                 .add_sized([160.0, 32.0], egui::Button::new(start_label))
@@ -371,8 +375,8 @@ impl LauncherApp {
             ui.separator();
             ui.label(
                 egui::RichText::new(
-                    "The relay is the small server you run on a Linux or Windows PC in the \
-                     office. Ask whoever set it up for its address if you don't know it.",
+                    "Il relay è il piccolo server che fai girare su un PC Linux o Windows \
+                     in ufficio. Se non conosci l'indirizzo, chiedilo a chi l'ha configurato.",
                 )
                 .small()
                 .weak(),
@@ -400,7 +404,7 @@ impl HostWindow {
     /// window ready to be driven by the root app's event loop.
     fn start(handle: &tokio::runtime::Handle, _ctx: egui::Context, config: HostConfig) -> Self {
         let status: SharedHostStatus = Arc::new(Mutex::new(HostStatus {
-            state: "Starting…".to_string(),
+            state: "Avvio…".to_string(),
             ..Default::default()
         }));
         host::spawn_gui(handle, config.clone(), status.clone());
@@ -441,7 +445,7 @@ impl eframe::App for HostWindow {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(8.0);
-            ui.heading("Sharing this screen");
+            ui.heading("Stai condividendo questo schermo");
             ui.add_space(8.0);
 
             let Some(st) = snapshot else {
@@ -452,20 +456,20 @@ impl eframe::App for HostWindow {
             if let Some(fatal) = &st.fatal {
                 ui.colored_label(
                     egui::Color32::LIGHT_RED,
-                    format!("Could not start: {fatal}"),
+                    format!("Impossibile avviare: {fatal}"),
                 );
                 return;
             }
 
             match &st.id {
                 Some(id) => {
-                    ui.label("Give these to the person who will connect:");
+                    ui.label("Comunica questi dati a chi si collegherà:");
                     ui.add_space(6.0);
                     egui::Grid::new("host_fields")
                         .num_columns(2)
                         .spacing([10.0, 8.0])
                         .show(ui, |ui| {
-                            ui.label("Relay address");
+                            ui.label("Indirizzo relay");
                             selectable_mono(ui, &self.relay);
                             ui.end_row();
 
@@ -478,7 +482,7 @@ impl eframe::App for HostWindow {
                                 selectable_mono(ui, &st.password);
                             } else {
                                 ui.label(
-                                    egui::RichText::new("the fixed password you set").italics(),
+                                    egui::RichText::new("la password fissa che hai impostato").italics(),
                                 );
                             }
                             ui.end_row();
@@ -488,7 +492,7 @@ impl eframe::App for HostWindow {
                         ui.add_space(4.0);
                         ui.label(
                             egui::RichText::new(
-                                "This one-time password is valid while this window stays open.",
+                                "Questa password monouso è valida finché questa finestra resta aperta.",
                             )
                             .small()
                             .weak(),
@@ -496,7 +500,7 @@ impl eframe::App for HostWindow {
                     }
                 }
                 None => {
-                    ui.label("Connecting to the relay…");
+                    ui.label("Connessione al relay…");
                 }
             }
 
@@ -507,47 +511,47 @@ impl eframe::App for HostWindow {
                 // Relay LED: red on fatal error, green once registered with the
                 // relay (ID assigned), amber while still connecting.
                 let (color, tip) = if st.fatal.is_some() {
-                    (egui::Color32::from_rgb(220, 70, 70), "Relay error")
+                    (egui::Color32::from_rgb(220, 70, 70), "Errore relay")
                 } else if st.id.is_some() {
                     (
                         egui::Color32::from_rgb(60, 180, 75),
-                        "Connected to the relay",
+                        "Connesso al relay",
                     )
                 } else {
                     (
                         egui::Color32::from_rgb(230, 170, 0),
-                        "Connecting to the relay…",
+                        "Connessione al relay…",
                     )
                 };
                 ui.label(egui::RichText::new("⏺").color(color).size(14.0))
                     .on_hover_text(tip);
-                ui.strong("Status:");
+                ui.strong("Stato:");
                 ui.label(&st.state);
             });
             if let Some((w, h)) = st.screen {
                 ui.label(
-                    egui::RichText::new(format!("Screen {w}×{h}, audio {}", on_off(st.audio)))
+                    egui::RichText::new(format!("Schermo {w}×{h}, audio {}", on_off(st.audio)))
                         .small()
                         .weak(),
                 );
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if self.tray.is_some() && ui.button("Minimize to tray").clicked() {
+                if self.tray.is_some() && ui.button("Riduci a icona").clicked() {
                     hide_to_tray(ctx);
                 }
-                if ui.button("Quit (stop sharing)").clicked() {
+                if ui.button("Esci (ferma la condivisione)").clicked() {
                     self.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
             ui.label(
                 egui::RichText::new(if self.tray.is_some() {
-                    "Closing the window (or \"Minimize to tray\") keeps RemoteCraft \
-                     running as an icon next to the clock — click it and choose \
-                     \"Show RemoteCraft\" to reopen. Use Quit to stop sharing."
+                    "Chiudendo la finestra (o con \"Riduci a icona\") RemoteCraft \
+                     resta attivo come icona vicino all'orologio — clicca l'icona e \
+                     scegli \"Mostra RemoteCraft\" per riaprirla. Usa Esci per fermare."
                 } else {
-                    "Close this window to stop sharing."
+                    "Chiudi questa finestra per fermare la condivisione."
                 })
                 .small()
                 .weak(),

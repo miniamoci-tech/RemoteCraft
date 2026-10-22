@@ -144,6 +144,22 @@ pub enum AppMessage {
         channels: u16,
         pcm: Vec<i16>,
     },
+
+    // --- Upload, viewer -> host (M12) ---
+    // Appended at the end so older peers keep the same variant numbering for
+    // every message above; an older host simply ignores these.
+    /// Viewer announces a file it is sending to the host.
+    UploadStart { name: String, size: u64 },
+    /// One ordered chunk of the file being uploaded.
+    UploadChunk { data: Vec<u8> },
+    /// Viewer signals the end of the current upload.
+    UploadEnd,
+    /// Host's result for an upload: `ok` with the saved path, or an error.
+    UploadResult {
+        name: String,
+        ok: bool,
+        message: String,
+    },
 }
 
 /// One of the host's monitors, advertised to the viewer so it can offer a

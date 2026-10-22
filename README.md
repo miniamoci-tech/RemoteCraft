@@ -151,13 +151,22 @@ downloadable run artifacts without creating a release.
   warning — the host advertises its version in `HostInfo`, and the viewer warns
   if it differs; a handshake that never completes now times out with a clear
   message instead of hanging.
-- [ ] M12 — Upload (local → remote): add a "Local files" section next to the
-  existing "Remote files" one, so the viewer can also *copy files to* the remote
-  host, not only download from it. Full two-way transfer. (Adds new protocol
-  messages, so it ships with a coordinated version bump.)
-- [ ] M13 — Italian translation of the interface (and the groundwork for other
-  languages): all viewer/host/launcher UI strings localised, Italian first.
-  UI-only, so no protocol change and no coordinated reinstall.
+- [x] M12 — Upload (local → remote): a "Local files" section (📤 Invia file)
+  next to the remote-files panel lets the viewer browse its own machine and
+  copy a file *to* the host, which saves it under `RemoteCraft-Uploads` using
+  the same safe-name check as downloads. Done backward-compatibly: the upload
+  messages are appended to the protocol, so older peers keep working and the
+  viewer only offers upload to a host new enough to accept it.
+- [x] M13 — Italian interface: the viewer, host and launcher UI are in Italian.
+  UI-only, no protocol change.
+- [x] Safer downloads + no stuck sessions (compatible subset of the review PR):
+  downloaded/uploaded names are validated (no path traversal, no overwrite,
+  Windows device names and alternate data streams rejected), and the host's
+  handshake times out after 20s instead of hanging. No protocol change.
+- [ ] M14 — Automatic relay discovery: find the relay with no typing. On the
+  same network, the client discovers the relay by itself (UDP/mDNS beacon); for
+  a remote peer, the relay address is pre-filled at install time (discovery
+  can't cross the internet without a known address). See the design notes.
 
 ### Security note
 

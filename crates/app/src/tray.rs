@@ -41,8 +41,8 @@ mod imp {
         /// Returns `None` if the icon could not be created.
         pub fn new(ctx: egui::Context, hwnd: Arc<AtomicIsize>) -> Option<Self> {
             let menu = Menu::new();
-            let show = MenuItem::new("Show RemoteCraft", true, None);
-            let quit = MenuItem::new("Quit (stop sharing)", true, None);
+            let show = MenuItem::new("Mostra RemoteCraft", true, None);
+            let quit = MenuItem::new("Esci (ferma la condivisione)", true, None);
             menu.append(&show).ok()?;
             menu.append(&quit).ok()?;
             let show_id = show.id().clone();
@@ -50,7 +50,7 @@ mod imp {
 
             let mut builder = TrayIconBuilder::new()
                 .with_menu(Box::new(menu))
-                .with_tooltip("RemoteCraft — sharing this screen");
+                .with_tooltip("RemoteCraft — condivisione schermo");
             if let Some(icon) = make_icon() {
                 builder = builder.with_icon(icon);
             }
