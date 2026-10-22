@@ -69,6 +69,16 @@ inspects the bytes it forwards.
 
 ## Building
 
+Protocol v2 requires updating the relay and both desktop peers together.
+It adds explicit session closure and tags data with its session ID, so queued
+traffic from a disconnected viewer cannot enter the next session. Older peers
+or relays are rejected during registration. Authentication is limited to 20
+seconds on both peers; a failed attempt releases the host for another viewer.
+
+Downloads accept only a filename and refuse to replace an existing file in
+`~/RemoteCraft-Downloads`. Rename or move an existing download before fetching
+a file with the same name again.
+
 Requires a recent stable Rust toolchain.
 
 ```bash

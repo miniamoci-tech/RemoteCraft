@@ -130,3 +130,117 @@ async fn wrong_password_fails_handshake() {
         "viewer must not establish a channel with wrong password"
     );
 }
+
+async fn paired(relay: &str) -> (RelayClient, RelayClient, u64) {
+    let host = RelayClient::connect(relay, None).await.expect("host");
+    let viewer = RelayClient::connect(relay, None).await.expect("viewer");
+    let session = viewer.connect_to(host.id()).await.expect("pair");
+    assert_eq!(host.wait_for_peer().await.expect("incoming").0, session);
+    (host, viewer, session)
+}
+
+#[tokio::test]
+async fn encrypted_receive_wakes_when_viewer_disconnects() {
+    let relay = start_relay().await;
+    let (host, viewer, _) = paired(&relay).await;
+    let (host_sc, viewer_sc) = tokio::join!(
+        SecureChannel::handshake(&host, false, "pw"),
+        SecureChannel::handshake(&viewer, true, "pw")
+    );
+    let host_sc = host_sc.expect("host handshake");
+    viewer_sc.expect("viewer handshake");
+    drop(viewer);
+    let result = tokio::time::timeout(Duration::from_secs(2), host_sc.recv_message(&host))
+        .await
+        .expect("disconnect must wake receive");
+    assert!(matches!(result, Err(remotecraft_net::NetError::PeerGone)));
+}
+
+#[tokio::test]
+async fn failed_authentication_releases_host_and_discards_old_data() {
+    let relay = start_relay().await;
+    let (host, bad, _) = paired(&relay).await;
+    bad.send(b"not a Noise handshake".to_vec())
+        .await
+        .expect("bad handshake");
+    bad.send(b"leftover old session bytes".to_vec())
+        .await
+        .expect("leftover");
+    assert!(SecureChannel::handshake(&host, false, "pw").await.is_err());
+    assert!(tokio::time::timeout(Duration::from_secs(2), bad.recv())
+        .await
+        .expect("closed")
+        .is_err());
+    let viewer = RelayClient::connect(&relay, None)
+        .await
+        .expect("new viewer");
+    viewer.connect_to(host.id()).await.expect("host released");
+    tokio::time::timeout(Duration::from_secs(2), host.wait_for_peer())
+        .await
+        .expect("new session")
+        .expect("incoming");
+    let (host_sc, viewer_sc) = tokio::join!(
+        SecureChannel::handshake(&host, false, "pw"),
+        SecureChannel::handshake(&viewer, true, "pw")
+    );
+    let host_sc = host_sc.expect("new host handshake");
+    let viewer_sc = viewer_sc.expect("new viewer handshake");
+    viewer_sc
+        .send_message(&viewer, b"new session")
+        .await
+        .expect("send");
+    assert_eq!(
+        host_sc.recv_message(&host).await.expect("recv"),
+        b"new session"
+    );
+}
+
+async fn silent_handshake_times_out(initiator: bool) {
+    let relay = start_relay().await;
+    let (host, viewer, _) = paired(&relay).await;
+    let (client, idle) = if initiator {
+        (&viewer, &host)
+    } else {
+        (&host, &viewer)
+    };
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    let result = SecureChannel::handshake(client, initiator, "pw").await;
+    let elapsed = started.elapsed();
+    tokio::time::resume();
+    assert!(matches!(
+        result,
+        Err(remotecraft_net::NetError::HandshakeTimeout)
+    ));
+    assert!(elapsed >= remotecraft_net::HANDSHAKE_TIMEOUT);
+    assert!(elapsed <= remotecraft_net::HANDSHAKE_TIMEOUT + Duration::from_millis(10));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while idle.recv().await.is_ok() {}
+    })
+    .await
+    .expect("timeout must close session");
+    let next = RelayClient::connect(&relay, None)
+        .await
+        .expect("next viewer");
+    next.connect_to(host.id()).await.expect("host must be free");
+    tokio::time::timeout(Duration::from_secs(2), host.wait_for_peer())
+        .await
+        .expect("incoming")
+        .expect("new session");
+    let (a, b) = tokio::join!(
+        SecureChannel::handshake(&host, false, "pw"),
+        SecureChannel::handshake(&next, true, "pw")
+    );
+    a.expect("host must authenticate again");
+    b.expect("viewer must authenticate again");
+}
+
+#[tokio::test]
+async fn silent_viewer_times_out_and_host_accepts_another_viewer() {
+    silent_handshake_times_out(false).await;
+}
+
+#[tokio::test]
+async fn silent_host_times_out_and_releases_session() {
+    silent_handshake_times_out(true).await;
+}

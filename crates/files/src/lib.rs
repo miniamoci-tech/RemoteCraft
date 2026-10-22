@@ -1,6 +1,6 @@
-//! Host-side file transfer: list a directory and stream a file as a sequence
-//! of [`AppMessage`]s. Kept separate from the app binary so it can be tested
-//! headlessly against real temporary files.
+//! File transfer: list host directories, stream files as [`AppMessage`]s and
+//! safely create viewer downloads. Kept separate from the app binary so it
+//! can be tested headlessly against real temporary files.
 
 #![deny(
     clippy::unwrap_used,
@@ -11,7 +11,9 @@
     clippy::unreachable
 )]
 
-use std::path::{Path, PathBuf};
+use std::fs::{File, OpenOptions};
+use std::io;
+use std::path::{Component, Path, PathBuf};
 
 use remotecraft_core::{AppMessage, DirEntry};
 use tokio::io::AsyncReadExt;
@@ -23,6 +25,50 @@ pub const FILE_CHUNK: usize = 256 * 1024;
 /// The outbound channel closed (the viewer session ended) while streaming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SenderClosed;
+
+/// Create a new viewer download without trusting the remote filename or
+/// overwriting an existing file (including a symlink).
+///
+/// Reject both Unix and Windows path syntax regardless of the viewer's OS,
+/// including Windows alternate data streams and device names.
+pub fn create_download(dir: &Path, name: &str) -> io::Result<(PathBuf, File)> {
+    let mut components = Path::new(name).components();
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix).is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        });
+    if !matches!(components.next(), Some(Component::Normal(_)))
+        || components.next().is_some()
+        || name
+            .chars()
+            .any(|c| c.is_control() || "/\\:<>\"|?*".contains(c))
+        || name.ends_with(['.', ' '])
+        || device
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid download filename",
+        ));
+    }
+    std::fs::create_dir_all(dir)?;
+    let dest = dir.join(name);
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&dest)?;
+    Ok((dest, file))
+}
 
 /// Build a [`AppMessage::DirListing`] for `path`. An empty path lists the
 /// host's home directory. Any error becomes [`AppMessage::FileError`].
@@ -133,6 +179,67 @@ fn home_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_rejects_paths_and_windows_special_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in [
+            "",
+            ".",
+            "..",
+            "../outside.txt",
+            "..\\outside.txt",
+            "/tmp/outside.txt",
+            "C:\\outside.txt",
+            "C:outside.txt",
+            "\\\\server\\share\\file",
+            "sub/file",
+            "sub\\file",
+            "./file",
+            "file/",
+            "file:stream",
+            "NUL",
+            "con.txt",
+            "AUX",
+            "COM1.log",
+            "LPT9",
+            "COM¹",
+            "file.",
+            "file ",
+            "bad\0name",
+        ] {
+            let err = create_download(dir.path(), name).expect_err(name);
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{name:?}");
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).expect("read_dir").count(), 0);
+    }
+
+    #[test]
+    fn download_creates_file_and_preserves_existing_contents() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let downloads = dir.path().join("downloads");
+        let (dest, mut file) = create_download(&downloads, "recording è.txt").expect("create");
+        file.write_all(b"keep this").expect("write");
+        drop(file);
+        assert_eq!(dest, downloads.join("recording è.txt"));
+        let err = create_download(&downloads, "recording è.txt").expect_err("must not replace");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(dest).expect("read"), b"keep this");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_does_not_follow_existing_symlinks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("outside.txt");
+        std::fs::write(&target, b"keep this").expect("write");
+        let downloads = dir.path().join("downloads");
+        std::fs::create_dir(&downloads).expect("mkdir");
+        std::os::unix::fs::symlink(&target, downloads.join("file.txt")).expect("symlink");
+        assert!(create_download(&downloads, "file.txt").is_err());
+        assert_eq!(std::fs::read(target).expect("read"), b"keep this");
+    }
 
     #[test]
     fn list_dir_sorts_dirs_first_and_reports_entries() {

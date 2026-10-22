@@ -28,6 +28,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use remotecraft_core::{
     checked_frame_len, decode_frame, encode_frame, FromRelay, PeerId, ToRelay, PROTOCOL_VERSION,
@@ -60,6 +61,9 @@ pub const MAX_MESSAGE: usize = 32 * 1024 * 1024;
 /// Outbound queue depth to the relay before we treat the peer as stalled.
 const OUTBOUND_QUEUE: usize = 1024;
 
+/// Maximum time either peer may spend authenticating a session.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+
 #[derive(Debug, thiserror::Error)]
 pub enum NetError {
     #[error("io error: {0}")]
@@ -74,6 +78,8 @@ pub enum NetError {
     PeerGone,
     #[error("handshake failed (wrong password, or peer is not RemoteCraft): {0}")]
     Handshake(String),
+    #[error("authentication timed out after 20 seconds")]
+    HandshakeTimeout,
     #[error("plaintext of {0} bytes exceeds MAX_PLAINTEXT")]
     TooLarge(usize),
     #[error("unexpected message while waiting for {expected}")]
@@ -89,6 +95,13 @@ enum Event {
     RelayError(String),
 }
 
+/// Session boundaries travel with data so a pending read wakes on disconnect
+/// and a subsequent handshake can discard bytes queued by the previous peer.
+struct PeerData {
+    session: u64,
+    bytes: Option<Vec<u8>>,
+}
+
 /// A client connection to the relay.
 ///
 /// All methods take `&self` so the client can be shared (behind an `Arc`)
@@ -98,9 +111,10 @@ enum Event {
 /// only one task receives from each at a time.
 pub struct RelayClient {
     id: PeerId,
+    session: AtomicU64,
     tx: mpsc::Sender<ToRelay>,
     events: tokio::sync::Mutex<mpsc::Receiver<Event>>,
-    data: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
+    data: tokio::sync::Mutex<mpsc::Receiver<PeerData>>,
     _writer: JoinHandle<()>,
     _reader: JoinHandle<()>,
 }
@@ -133,7 +147,7 @@ impl RelayClient {
 
         let (out_tx, mut out_rx) = mpsc::channel::<ToRelay>(OUTBOUND_QUEUE);
         let (ev_tx, ev_rx) = mpsc::channel::<Event>(64);
-        let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(OUTBOUND_QUEUE);
+        let (data_tx, data_rx) = mpsc::channel::<PeerData>(OUTBOUND_QUEUE);
 
         let writer_task = tokio::spawn(async move {
             while let Some(msg) = out_rx.recv().await {
@@ -162,15 +176,32 @@ impl RelayClient {
                     Err(_) => continue,
                 };
                 match msg {
-                    FromRelay::Data(bytes) => {
-                        if data_tx.send(bytes).await.is_err() {
+                    FromRelay::Data { session, bytes } => {
+                        if data_tx
+                            .send(PeerData {
+                                session,
+                                bytes: Some(bytes),
+                            })
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
                     FromRelay::SessionOpened { session, peer } => {
                         let _ = ev_tx.send(Event::PeerConnected { session, peer }).await;
                     }
-                    FromRelay::SessionClosed { .. } => {
+                    FromRelay::SessionClosed { session } => {
+                        if data_tx
+                            .send(PeerData {
+                                session,
+                                bytes: None,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                         let _ = ev_tx.send(Event::PeerDisconnected).await;
                     }
                     FromRelay::SessionRefused { target, reason } => {
@@ -186,6 +217,7 @@ impl RelayClient {
 
         Ok(Self {
             id,
+            session: AtomicU64::new(0),
             tx: out_tx,
             events: tokio::sync::Mutex::new(ev_rx),
             data: tokio::sync::Mutex::new(data_rx),
@@ -207,21 +239,50 @@ impl RelayClient {
             })
             .await
             .map_err(|_| NetError::PeerGone)?;
-        match self.next_event().await? {
-            Event::PeerConnected { session, .. } => Ok(session),
-            Event::Refused { target, reason } => Err(NetError::Refused { target, reason }),
-            Event::RelayError(m) => Err(NetError::Relay(m)),
-            Event::PeerDisconnected => Err(NetError::PeerGone),
+        loop {
+            match self.next_event().await? {
+                Event::PeerConnected { session, .. } => {
+                    self.session.store(session, Ordering::Relaxed);
+                    return Ok(session);
+                }
+                Event::Refused { target, reason } => {
+                    return Err(NetError::Refused { target, reason })
+                }
+                Event::RelayError(m) => return Err(NetError::Relay(m)),
+                Event::PeerDisconnected => continue,
+            }
         }
     }
 
     /// Wait for an incoming peer (host side).
     pub async fn wait_for_peer(&self) -> Result<(u64, PeerId), NetError> {
-        match self.next_event().await? {
-            Event::PeerConnected { session, peer } => Ok((session, peer)),
-            Event::RelayError(m) => Err(NetError::Relay(m)),
-            Event::Refused { target, reason } => Err(NetError::Refused { target, reason }),
-            Event::PeerDisconnected => Err(NetError::PeerGone),
+        let mut events = self.events.lock().await;
+        let mut data = self.data.lock().await;
+        loop {
+            // Drain abandoned session data while waiting. Otherwise a peer
+            // that queued data before failing authentication can block the
+            // reader from delivering the close/new-session notifications.
+            let event = tokio::select! {
+                biased;
+                event = events.recv() => event.ok_or(NetError::PeerGone)?,
+                frame = data.recv() => {
+                    if frame.is_none() {
+                        return Err(NetError::PeerGone);
+                    }
+                    continue;
+                }
+            };
+            match event {
+                Event::PeerConnected { session, peer } => {
+                    self.session.store(session, Ordering::Relaxed);
+                    return Ok((session, peer));
+                }
+                Event::RelayError(m) => return Err(NetError::Relay(m)),
+                Event::Refused { target, reason } => {
+                    return Err(NetError::Refused { target, reason })
+                }
+                Event::PeerDisconnected => continue,
+            }
         }
     }
 
@@ -232,16 +293,37 @@ impl RelayClient {
 
     /// Send one opaque payload to the paired peer.
     pub async fn send(&self, bytes: Vec<u8>) -> Result<(), NetError> {
+        let session = self.session.load(Ordering::Relaxed);
+        if session == 0 {
+            return Err(NetError::PeerGone);
+        }
         self.tx
-            .send(ToRelay::Data(bytes))
+            .send(ToRelay::Data { session, bytes })
             .await
             .map_err(|_| NetError::PeerGone)
     }
 
     /// Receive one opaque payload from the paired peer.
     pub async fn recv(&self) -> Result<Vec<u8>, NetError> {
+        let session = self.session.load(Ordering::Relaxed);
+        if session == 0 {
+            return Err(NetError::PeerGone);
+        }
         let mut data = self.data.lock().await;
-        data.recv().await.ok_or(NetError::PeerGone)
+        while let Some(frame) = data.recv().await {
+            if frame.session == session {
+                return frame.bytes.ok_or(NetError::PeerGone);
+            }
+        }
+        Err(NetError::PeerGone)
+    }
+
+    /// Release a session while retaining this peer's public ID.
+    pub async fn disconnect(&self, session: u64) -> Result<(), NetError> {
+        self.tx
+            .send(ToRelay::Disconnect { session })
+            .await
+            .map_err(|_| NetError::PeerGone)
     }
 }
 
@@ -290,7 +372,28 @@ pub struct SecureChannel {
 impl SecureChannel {
     /// Run the Noise handshake over `client` and return the secure channel.
     /// The viewer is the `initiator`; the host is the responder.
+    /// Authentication is bounded by [`HANDSHAKE_TIMEOUT`]. A failure requests
+    /// session closure so a silent or invalid peer cannot keep the host busy.
     pub async fn handshake(
+        client: &RelayClient,
+        initiator: bool,
+        password: &str,
+    ) -> Result<Self, NetError> {
+        let session = client.session.load(Ordering::Relaxed);
+        let result = tokio::time::timeout(
+            HANDSHAKE_TIMEOUT,
+            Self::handshake_inner(client, initiator, password),
+        )
+        .await
+        .unwrap_or(Err(NetError::HandshakeTimeout));
+        if result.is_err() {
+            // A failed or silent peer must not keep the host marked busy.
+            let _ = client.disconnect(session).await;
+        }
+        result
+    }
+
+    async fn handshake_inner(
         client: &RelayClient,
         initiator: bool,
         password: &str,

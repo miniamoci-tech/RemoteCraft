@@ -186,8 +186,11 @@ impl Relay {
                 ToRelay::Connect { target } => {
                     self.open_session(id, &target);
                 }
-                ToRelay::Data(bytes) => {
-                    self.forward_data(id, bytes).await;
+                ToRelay::Data { session, bytes } => {
+                    self.forward_data(id, session, bytes).await;
+                }
+                ToRelay::Disconnect { session } => {
+                    self.close_session(id, session);
                 }
             }
         }
@@ -309,8 +312,9 @@ impl Relay {
         }
         let from_tx = peers.get(from).map(|e| e.tx.clone());
         let target_tx = peers.get(target).map(|e| e.tx.clone());
-        drop(peers);
 
+        // Queue session notifications while holding the state lock so a
+        // concurrent disconnect cannot overtake SessionOpened on either peer.
         if let Some(tx) = from_tx {
             let _ = tx.try_send(FromRelay::SessionOpened {
                 session,
@@ -326,7 +330,27 @@ impl Relay {
         info!(from = %from, target = %target, session, "session opened");
     }
 
-    async fn forward_data(&self, from: &PeerId, bytes: Vec<u8>) {
+    fn close_session(&self, from: &PeerId, session: u64) {
+        let mut peers = match self.peers.lock() {
+            Ok(p) => p,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let partner = peers
+            .get(from)
+            .filter(|e| e.session == Some(session))
+            .and_then(|e| e.partner.clone());
+        if let Some(partner) = partner {
+            for id in [from, &partner] {
+                if let Some(entry) = peers.get_mut(id) {
+                    entry.partner = None;
+                    entry.session = None;
+                    let _ = entry.tx.try_send(FromRelay::SessionClosed { session });
+                }
+            }
+        }
+    }
+
+    async fn forward_data(&self, from: &PeerId, session: u64, bytes: Vec<u8>) {
         let target_tx = {
             let peers = match self.peers.lock() {
                 Ok(p) => p,
@@ -334,6 +358,7 @@ impl Relay {
             };
             peers
                 .get(from)
+                .filter(|e| e.session == Some(session))
                 .and_then(|e| e.partner.clone())
                 .and_then(|p| peers.get(&p).map(|e| e.tx.clone()))
         };
@@ -344,7 +369,7 @@ impl Relay {
             // applies backpressure to the sender when the receiver is slow.
             // (Whole-frame dropping to control latency is the app's job, at
             // the capture source, not the relay's.)
-            let _ = tx.send(FromRelay::Data(bytes)).await;
+            let _ = tx.send(FromRelay::Data { session, bytes }).await;
         }
     }
 
