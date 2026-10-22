@@ -96,6 +96,9 @@ pub enum AppMessage {
         screen_height: u32,
         monitors: Vec<MonitorInfo>,
         active: u32,
+        /// The host's RemoteCraft version string, so the viewer can warn if
+        /// the two sides differ (a mismatch can otherwise fail silently).
+        host_version: String,
     },
     /// One JPEG-encoded screen frame from the host.
     Frame {

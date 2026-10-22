@@ -33,6 +33,19 @@ struct Download {
     error: Option<String>,
 }
 
+/// Relay/connection state, shown as a coloured LED in the viewer.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum ConnState {
+    #[default]
+    Connecting,
+    /// Reached the relay; pairing/authenticating with the host.
+    RelayConnected,
+    /// Session established and frames flowing.
+    InSession,
+    /// Could not connect or the session dropped.
+    Failed,
+}
+
 #[derive(Default)]
 struct ViewerState {
     frame: Option<(usize, usize, Vec<u8>)>,
@@ -43,11 +56,22 @@ struct ViewerState {
     /// The host's monitors and which one is currently shown (M10).
     monitors: Vec<MonitorInfo>,
     active_monitor: u32,
+    /// Relay/connection state for the status LED.
+    conn: ConnState,
+    /// Set when the host runs a different RemoteCraft version than this viewer.
+    version_warning: Option<String>,
 }
 
 fn set_status(shared: &Arc<Mutex<ViewerState>>, ctx: &egui::Context, text: &str) {
     if let Ok(mut s) = shared.lock() {
         s.status = text.to_string();
+    }
+    ctx.request_repaint();
+}
+
+fn set_conn(shared: &Arc<Mutex<ViewerState>>, ctx: &egui::Context, state: ConnState) {
+    if let Ok(mut s) = shared.lock() {
+        s.conn = state;
     }
     ctx.request_repaint();
 }
@@ -141,7 +165,7 @@ pub struct ViewerApp {
 
 impl eframe::App for ViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let (status, new_frame, listing, download, monitors, active_monitor) =
+        let (status, new_frame, listing, download, monitors, active_monitor, conn, version_warning) =
             match self.shared.lock() {
                 Ok(s) => {
                     let nf = if s.version != self.shown_version {
@@ -157,6 +181,8 @@ impl eframe::App for ViewerApp {
                         s.download.clone(),
                         s.monitors.clone(),
                         s.active_monitor,
+                        s.conn,
+                        s.version_warning.clone(),
                     )
                 }
                 Err(_) => (
@@ -166,6 +192,8 @@ impl eframe::App for ViewerApp {
                     None,
                     Vec::new(),
                     0,
+                    ConnState::Failed,
+                    None,
                 ),
             };
 
@@ -187,6 +215,8 @@ impl eframe::App for ViewerApp {
 
         egui::TopBottomPanel::top("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
+                relay_led(ui, conn);
+                ui.separator();
                 ui.toggle_value(&mut self.show_files, "📁 Files");
                 if ui
                     .toggle_value(&mut self.fullscreen, "⛶ Fullscreen")
@@ -221,6 +251,15 @@ impl eframe::App for ViewerApp {
                 ui.label(&status);
             });
         });
+
+        if let Some(warn) = &version_warning {
+            egui::TopBottomPanel::top("version_warning").show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("⚠").color(egui::Color32::from_rgb(230, 170, 0)));
+                    ui.label(egui::RichText::new(warn).color(egui::Color32::from_rgb(230, 170, 0)));
+                });
+            });
+        }
 
         if self.show_files {
             egui::SidePanel::left("files")
@@ -402,6 +441,27 @@ impl ViewerApp {
     }
 }
 
+/// A small coloured dot showing the relay/connection state, with a tooltip.
+fn relay_led(ui: &mut egui::Ui, conn: ConnState) {
+    let (color, tip) = match conn {
+        ConnState::Connecting => (egui::Color32::from_rgb(230, 170, 0), "Connecting to relay…"),
+        ConnState::RelayConnected => (
+            egui::Color32::from_rgb(90, 160, 230),
+            "Relay connected — authenticating with the host…",
+        ),
+        ConnState::InSession => (
+            egui::Color32::from_rgb(60, 180, 75),
+            "Connected to the host through the relay",
+        ),
+        ConnState::Failed => (
+            egui::Color32::from_rgb(220, 70, 70),
+            "Not connected to the relay",
+        ),
+    };
+    ui.label(egui::RichText::new("⏺").color(color).size(14.0))
+        .on_hover_text(tip);
+}
+
 fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
@@ -557,29 +617,48 @@ async fn network(
     out_tx: mpsc::UnboundedSender<AppMessage>,
     mut out_rx: mpsc::UnboundedReceiver<AppMessage>,
 ) {
+    set_conn(&shared, &ctx, ConnState::Connecting);
     set_status(&shared, &ctx, "Connecting to relay ...");
     let client = match RelayClient::connect(&relay, None).await {
         Ok(c) => c,
         Err(e) => {
+            set_conn(&shared, &ctx, ConnState::Failed);
             set_status(&shared, &ctx, &format!("Relay connection failed: {e}"));
             return;
         }
     };
+    set_conn(&shared, &ctx, ConnState::RelayConnected);
 
     set_status(&shared, &ctx, &format!("Connecting to host {target} ..."));
     if let Err(e) = client.connect_to(&target).await {
+        set_conn(&shared, &ctx, ConnState::Failed);
         set_status(&shared, &ctx, &format!("Could not reach host: {e}"));
         return;
     }
 
     set_status(&shared, &ctx, "Authenticating ...");
-    let sc = match SecureChannel::handshake(&client, true, &password).await {
-        Ok(sc) => sc,
-        Err(e) => {
+    // Bound the handshake: if the host never completes it (often a version
+    // mismatch between the two sides), surface a clear message instead of
+    // hanging on "Authenticating..." forever.
+    let handshake = SecureChannel::handshake(&client, true, &password);
+    let sc = match tokio::time::timeout(Duration::from_secs(20), handshake).await {
+        Ok(Ok(sc)) => sc,
+        Ok(Err(e)) => {
+            set_conn(&shared, &ctx, ConnState::Failed);
             set_status(
                 &shared,
                 &ctx,
                 &format!("Authentication failed (wrong password?): {e}"),
+            );
+            return;
+        }
+        Err(_) => {
+            set_conn(&shared, &ctx, ConnState::Failed);
+            set_status(
+                &shared,
+                &ctx,
+                "No response from the host. Make sure both sides run the same \
+                 RemoteCraft version and the password is correct.",
             );
             return;
         }
@@ -613,6 +692,7 @@ async fn network(
         path: String::new(),
     });
 
+    set_conn(&shared, &ctx, ConnState::InSession);
     set_status(&shared, &ctx, "Connected. Receiving screen ...");
     let mut frames = 0u64;
     let mut download: Option<std::fs::File> = None;
@@ -640,11 +720,22 @@ async fn network(
                     screen_height,
                     monitors,
                     active,
+                    host_version,
                 }) => {
                     let count = monitors.len();
+                    let ours = env!("CARGO_PKG_VERSION");
+                    let warning = if !host_version.is_empty() && host_version != ours {
+                        Some(format!(
+                            "Version mismatch: host is {host_version}, this viewer is {ours}. \
+                             Update both to the same version if something misbehaves."
+                        ))
+                    } else {
+                        None
+                    };
                     if let Ok(mut s) = shared.lock() {
                         s.monitors = monitors;
                         s.active_monitor = active;
+                        s.version_warning = warning;
                     }
                     let extra = if count > 1 {
                         format!(" Monitor {} of {count}.", active + 1)
@@ -717,6 +808,7 @@ async fn network(
                 Err(_) => {}
             },
             Err(e) => {
+                set_conn(&shared, &ctx, ConnState::Failed);
                 set_status(&shared, &ctx, &format!("Disconnected: {e}"));
                 return;
             }

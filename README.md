@@ -146,6 +146,11 @@ downloadable run artifacts without creating a release.
   can switch which monitor it sees and controls. Input is mapped into the chosen
   monitor's rectangle in the virtual desktop (Windows uses `SetCursorPos`, since
   enigo's absolute move only reaches the primary monitor).
+- [x] M11 — Connection UX: a coloured relay LED in the viewer and host windows
+  (amber = connecting, green = connected, red = problem) and a version-mismatch
+  warning — the host advertises its version in `HostInfo`, and the viewer warns
+  if it differs; a handshake that never completes now times out with a clear
+  message instead of hanging.
 
 ### Security note
 

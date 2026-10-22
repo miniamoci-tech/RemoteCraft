@@ -304,6 +304,7 @@ async fn run_session(
             screen_height: height,
             monitors: monitors.clone(),
             active: 0,
+            host_version: env!("CARGO_PKG_VERSION").to_string(),
         })
         .await
         .is_err()
@@ -357,6 +358,7 @@ async fn produce_frames(
                         screen_height: height,
                         monitors: monitors.to_vec(),
                         active: index,
+                        host_version: env!("CARGO_PKG_VERSION").to_string(),
                     })
                     .await
                     .is_err()

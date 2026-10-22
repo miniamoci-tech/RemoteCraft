@@ -504,6 +504,23 @@ impl eframe::App for HostWindow {
             ui.separator();
             ui.add_space(6.0);
             ui.horizontal(|ui| {
+                // Relay LED: red on fatal error, green once registered with the
+                // relay (ID assigned), amber while still connecting.
+                let (color, tip) = if st.fatal.is_some() {
+                    (egui::Color32::from_rgb(220, 70, 70), "Relay error")
+                } else if st.id.is_some() {
+                    (
+                        egui::Color32::from_rgb(60, 180, 75),
+                        "Connected to the relay",
+                    )
+                } else {
+                    (
+                        egui::Color32::from_rgb(230, 170, 0),
+                        "Connecting to the relay…",
+                    )
+                };
+                ui.label(egui::RichText::new("⏺").color(color).size(14.0))
+                    .on_hover_text(tip);
                 ui.strong("Status:");
                 ui.label(&st.state);
             });
