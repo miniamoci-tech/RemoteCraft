@@ -151,6 +151,13 @@ downloadable run artifacts without creating a release.
   warning — the host advertises its version in `HostInfo`, and the viewer warns
   if it differs; a handshake that never completes now times out with a clear
   message instead of hanging.
+- [ ] M12 — Upload (local → remote): add a "Local files" section next to the
+  existing "Remote files" one, so the viewer can also *copy files to* the remote
+  host, not only download from it. Full two-way transfer. (Adds new protocol
+  messages, so it ships with a coordinated version bump.)
+- [ ] M13 — Italian translation of the interface (and the groundwork for other
+  languages): all viewer/host/launcher UI strings localised, Italian first.
+  UI-only, so no protocol change and no coordinated reinstall.
 
 ### Security note
 
