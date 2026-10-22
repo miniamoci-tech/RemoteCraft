@@ -19,3 +19,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 remotecraft-relay = { path = "../relay" }
+tokio = { workspace = true, features = ["test-util"] }

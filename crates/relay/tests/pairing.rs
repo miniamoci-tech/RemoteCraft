@@ -72,16 +72,36 @@ async fn two_peers_pair_and_relay_bytes() {
     assert_eq!(vs, hs, "both peers share one session id");
 
     // Viewer -> host.
-    send_msg(&mut viewer, &ToRelay::Data(b"hello host".to_vec())).await;
+    send_msg(
+        &mut viewer,
+        &ToRelay::Data {
+            session: vs,
+            bytes: b"hello host".to_vec(),
+        },
+    )
+    .await;
     match read_msg(&mut host).await {
-        FromRelay::Data(bytes) => assert_eq!(bytes, b"hello host"),
+        FromRelay::Data { session, bytes } => {
+            assert_eq!(session, vs);
+            assert_eq!(bytes, b"hello host");
+        }
         other => panic!("host expected Data, got {other:?}"),
     }
 
     // Host -> viewer.
-    send_msg(&mut host, &ToRelay::Data(b"hello viewer".to_vec())).await;
+    send_msg(
+        &mut host,
+        &ToRelay::Data {
+            session: hs,
+            bytes: b"hello viewer".to_vec(),
+        },
+    )
+    .await;
     match read_msg(&mut viewer).await {
-        FromRelay::Data(bytes) => assert_eq!(bytes, b"hello viewer"),
+        FromRelay::Data { session, bytes } => {
+            assert_eq!(session, hs);
+            assert_eq!(bytes, b"hello viewer");
+        }
         other => panic!("viewer expected Data, got {other:?}"),
     }
 }
@@ -129,4 +149,104 @@ async fn partner_is_told_when_peer_disconnects() {
         FromRelay::SessionClosed { .. } => {}
         other => panic!("host expected SessionClosed, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn explicit_close_preserves_ids_and_rejects_stale_session_traffic() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(Relay::new().serve(listener));
+    let (mut host, host_id) = register(addr).await;
+    let (mut viewer, viewer_id) = register(addr).await;
+    send_msg(
+        &mut viewer,
+        &ToRelay::Connect {
+            target: host_id.clone(),
+        },
+    )
+    .await;
+    let old_session = match read_msg(&mut host).await {
+        FromRelay::SessionOpened { session, .. } => session,
+        other => panic!("expected open, got {other:?}"),
+    };
+    let _ = read_msg(&mut viewer).await;
+    send_msg(
+        &mut host,
+        &ToRelay::Disconnect {
+            session: old_session,
+        },
+    )
+    .await;
+    for peer in [&mut host, &mut viewer] {
+        assert_eq!(
+            read_msg(peer).await,
+            FromRelay::SessionClosed {
+                session: old_session
+            }
+        );
+    }
+    send_msg(&mut viewer, &ToRelay::Connect { target: host_id }).await;
+    let new_session = match read_msg(&mut host).await {
+        FromRelay::SessionOpened { session, peer } => {
+            assert_eq!(peer, viewer_id);
+            session
+        }
+        other => panic!("expected new session, got {other:?}"),
+    };
+    let _ = read_msg(&mut viewer).await;
+    assert_ne!(old_session, new_session);
+    send_msg(
+        &mut viewer,
+        &ToRelay::Disconnect {
+            session: old_session,
+        },
+    )
+    .await;
+    send_msg(
+        &mut viewer,
+        &ToRelay::Data {
+            session: old_session,
+            bytes: b"stale".to_vec(),
+        },
+    )
+    .await;
+    send_msg(
+        &mut viewer,
+        &ToRelay::Data {
+            session: new_session,
+            bytes: b"current".to_vec(),
+        },
+    )
+    .await;
+    let got = tokio::time::timeout(std::time::Duration::from_secs(2), read_msg(&mut host))
+        .await
+        .expect("current data");
+    assert_eq!(
+        got,
+        FromRelay::Data {
+            session: new_session,
+            bytes: b"current".to_vec()
+        }
+    );
+}
+
+#[tokio::test]
+async fn old_protocol_is_rejected_during_registration() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(Relay::new().serve(listener));
+    let mut peer = TcpStream::connect(addr).await.expect("connect");
+    send_msg(
+        &mut peer,
+        &ToRelay::Register {
+            protocol_version: 1,
+            desired_id: None,
+        },
+    )
+    .await;
+    assert!(matches!(read_msg(&mut peer).await, FromRelay::Error { .. }));
 }

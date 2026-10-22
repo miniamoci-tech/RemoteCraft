@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Protocol version. Peers and relay must agree on the major value.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Largest frame payload the relay or a peer will accept, in bytes.
 ///
@@ -60,7 +60,10 @@ pub enum ToRelay {
     Ping,
     /// Opaque payload for the peer's current session. The relay forwards the
     /// bytes verbatim to the paired peer and never inspects them.
-    Data(Vec<u8>),
+    Data { session: u64, bytes: Vec<u8> },
+    /// End this session without unregistering either peer. The session ID
+    /// prevents a delayed request from closing a subsequent session.
+    Disconnect { session: u64 },
 }
 
 /// Control messages the relay sends to a peer.
@@ -78,7 +81,7 @@ pub enum FromRelay {
     /// Reply to [`ToRelay::Ping`].
     Pong,
     /// Opaque payload forwarded from the paired peer's [`ToRelay::Data`].
-    Data(Vec<u8>),
+    Data { session: u64, bytes: Vec<u8> },
     /// The paired peer disconnected or ended the session.
     SessionClosed { session: u64 },
 }

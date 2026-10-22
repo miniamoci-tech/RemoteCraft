@@ -228,11 +228,11 @@ async fn host_loop(config: HostConfig, reporter: Reporter) {
     reporter.ready(&id, &config, (width, height));
 
     loop {
-        let (_session, peer) = match client.wait_for_peer().await {
+        let (session, peer) = match client.wait_for_peer().await {
             Ok(v) => v,
             Err(e) => {
-                reporter.state(&format!("Waiting again ({e})…"));
-                continue;
+                reporter.fatal(&format!("relay connection lost: {e}"));
+                return;
             }
         };
         reporter.state(&format!("{peer} is connecting — checking password…"));
@@ -240,9 +240,7 @@ async fn host_loop(config: HostConfig, reporter: Reporter) {
         let sc = match SecureChannel::handshake(&client, false, &config.password).await {
             Ok(sc) => sc,
             Err(e) => {
-                reporter.state(&format!(
-                    "Someone tried with the wrong password ({e}). Waiting…"
-                ));
+                reporter.state(&format!("Authentication failed ({e}). Waiting…"));
                 continue;
             }
         };
@@ -261,6 +259,10 @@ async fn host_loop(config: HostConfig, reporter: Reporter) {
         )
         .await;
         active.store(false, Ordering::Relaxed);
+        if let Err(e) = client.disconnect(session).await {
+            reporter.fatal(&format!("cannot close session: {e}"));
+            return;
+        }
         reporter.state(&format!(
             "Disconnected ({reason}). Waiting for someone to connect…"
         ));

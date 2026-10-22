@@ -9,7 +9,7 @@ use std::time::Duration;
 use remotecraft_core::{
     decode_frame, to_bytes, AppMessage, DirEntry, InputEvent, KeyName, MonitorInfo, MouseButton,
 };
-use remotecraft_net::{RelayClient, SecureChannel};
+use remotecraft_net::{NetError, RelayClient, SecureChannel};
 use tokio::sync::mpsc;
 
 use crate::flag;
@@ -640,25 +640,24 @@ async fn network(
     // Bound the handshake: if the host never completes it (often a version
     // mismatch between the two sides), surface a clear message instead of
     // hanging on "Authenticating..." forever.
-    let handshake = SecureChannel::handshake(&client, true, &password);
-    let sc = match tokio::time::timeout(Duration::from_secs(20), handshake).await {
-        Ok(Ok(sc)) => sc,
-        Ok(Err(e)) => {
-            set_conn(&shared, &ctx, ConnState::Failed);
-            set_status(
-                &shared,
-                &ctx,
-                &format!("Authentication failed (wrong password?): {e}"),
-            );
-            return;
-        }
-        Err(_) => {
+    let sc = match SecureChannel::handshake(&client, true, &password).await {
+        Ok(sc) => sc,
+        Err(NetError::HandshakeTimeout) => {
             set_conn(&shared, &ctx, ConnState::Failed);
             set_status(
                 &shared,
                 &ctx,
                 "No response from the host. Make sure both sides run the same \
                  RemoteCraft version and the password is correct.",
+            );
+            return;
+        }
+        Err(e) => {
+            set_conn(&shared, &ctx, ConnState::Failed);
+            set_status(
+                &shared,
+                &ctx,
+                &format!("Authentication failed (wrong password?): {e}"),
             );
             return;
         }
@@ -824,13 +823,8 @@ fn begin_download(
     size: u64,
 ) -> Option<std::fs::File> {
     let dir = download_dir();
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        mark_download_error(shared, ctx, &format!("cannot create download folder: {e}"));
-        return None;
-    }
-    let dest = dir.join(name);
-    match std::fs::File::create(&dest) {
-        Ok(file) => {
+    match remotecraft_files::create_download(&dir, name) {
+        Ok((dest, file)) => {
             if let Ok(mut s) = shared.lock() {
                 s.download = Some(Download {
                     name: name.to_string(),
@@ -845,11 +839,7 @@ fn begin_download(
             Some(file)
         }
         Err(e) => {
-            mark_download_error(
-                shared,
-                ctx,
-                &format!("cannot create {}: {e}", dest.display()),
-            );
+            mark_download_error(shared, ctx, &format!("cannot save download {name}: {e}"));
             None
         }
     }
